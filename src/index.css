@@ -1,0 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-sand-100: var(--th-sand-100);
+  --color-sand-300: var(--th-sand-300);
+  --color-sand-500: var(--th-sand-500);
+  --color-sand-700: var(--th-sand-700);
+  
+  --color-ink-900: var(--th-ink-900);
+  --color-ink-800: var(--th-ink-800);
+  --color-ink-700: var(--th-ink-700);
+  --color-ink-600: var(--th-ink-600);
+  
+  --color-white: var(--th-white);
+  --color-black: var(--th-black);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+}
+
+:root {
+  /* Light mode defaults (when NOT matched dark) */
+  --th-sand-100: #111111;
+  --th-sand-300: #333333;
+  --th-sand-500: #AB8122; 
+  --th-sand-700: #856113;
+  
+  --th-ink-900: #F9F7F1;
+  --th-ink-800: #EBE5D8;
+  --th-ink-700: #DFD8C6;
+  --th-ink-600: #C7BFA9;
+
+  --th-white: #000000;
+  --th-black: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --th-sand-100: #F6F1E5;
+    --th-sand-300: #E5DBBE;
+    --th-sand-500: #C9A84C;
+    --th-sand-700: #B0923E;
+    
+    --th-ink-900: #080808;
+    --th-ink-800: #111111;
+    --th-ink-700: #1A1A1A;
+    --th-ink-600: #2C2C2C;
+
+    --th-white: #ffffff;
+    --th-black: #000000;
+  }
+}
+
+body {
+  background-color: var(--color-ink-900);
+  color: var(--color-sand-100);
+  font-family: var(--font-sans);
+}
+
+@layer utilities {
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+  .backface-hidden {
+    backface-visibility: hidden;
+  }
+  .rotate-y-180 {
+    transform: rotateY(180deg);
+  }
+  
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .hide-scrollbar {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome, Safari and Opera */
+  }
+
+  .perspective-1000 {
+    perspective: 1000px;
+  }
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+  .backface-hidden {
+    backface-visibility: hidden;
+  }
+  .rotate-y-180 {
+    transform: rotateY(180deg);
+  }
+  .ease-in-out-back {
+    transition-timing-function: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  }
+}
+
+@media print {
+  body {
+    background-color: white;
+    color: black;
+  }
+  
+  nav, button {
+    display: none !important;
+  }
+  
+  .border, .border-white\/10 {
+    border-color: #eee !important;
+  }
+  
+  .bg-white\/\[0\.02\] {
+    background-color: #fafafa !important;
+  }
+}
+
+

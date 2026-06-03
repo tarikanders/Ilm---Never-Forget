@@ -1,0 +1,29 @@
+{
+  "entities": {
+    "Summary": {
+      "title": "Summary",
+      "description": "A summarized document stored in the user library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "category": { "type": "string" },
+        "centralIdea": { "type": "string" },
+        "keyConcepts": { "type": "array" },
+        "practicalLessons": { "type": "array" },
+        "memorableQuotes": { "type": "array" },
+        "mindMap": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "title"]
+    }
+  },
+  "firestore": {
+    "users/{userId}/summaries/{summaryId}": {
+      "schema": { "$ref": "Summary" },
+      "description": "User's collection of document summaries"
+    }
+  }
+}

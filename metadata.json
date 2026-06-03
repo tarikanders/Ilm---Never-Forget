@@ -1,0 +1,6 @@
+{
+  "name": "Ilm",
+  "description": "A smart reading summary app that synthesizes PDFs, EPUBs, and text into premium reading cards, flashcards, and concept maps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
