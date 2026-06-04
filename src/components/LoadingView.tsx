@@ -6,18 +6,24 @@ const LOADING_STEPS = [
   { id: 1, label: "Extraction du contenu brut...", icon: FileText, duration: 2500 },
   { id: 2, label: "Identification de la thèse centrale...", icon: BrainCircuit, duration: 4000 },
   { id: 3, label: "Synthèse détaillée des concepts clés...", icon: Network, duration: 6000 },
-  { id: 4, label: "Générations des citations et leçons...", icon: CheckCircle2, duration: Infinity }
+  { id: 4, label: "Génération des citations et leçons...", icon: CheckCircle2, duration: Infinity }
 ];
 
-export function LoadingView() {
+interface LoadingViewProps {
+  current?: number;
+  total?: number;
+  fileName?: string;
+}
+
+export function LoadingView({ current, total, fileName }: LoadingViewProps) {
   const [currentStep, setCurrentStep] = useState(0);
 
   useEffect(() => {
+    setCurrentStep(0);
     let timeoutId: number;
-    
+
     const advanceStep = (stepIndex: number) => {
       if (stepIndex >= LOADING_STEPS.length - 1) return;
-      
       timeoutId = window.setTimeout(() => {
         setCurrentStep(stepIndex + 1);
         advanceStep(stepIndex + 1);
@@ -25,13 +31,13 @@ export function LoadingView() {
     };
 
     advanceStep(0);
-
     return () => clearTimeout(timeoutId);
-  }, []);
+  }, [current]);
+
+  const isBatch = total !== undefined && total > 1;
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-12 animate-in fade-in zoom-in-95 duration-1000 -mt-16 w-full max-w-xl mx-auto px-4">
-      {/* Central animated orbit / loader */}
       <div className="relative flex items-center justify-center">
         <div className="absolute inset-0 bg-sand-500/5 blur-3xl rounded-full scale-150"></div>
         <div className="w-32 h-32 border border-sand-500/20 rounded-full animate-ping absolute duration-[3000ms]"></div>
@@ -43,24 +49,37 @@ export function LoadingView() {
 
       <div className="text-center space-y-3 w-full">
         <h2 className="text-2xl md:text-3xl font-serif text-sand-100 tracking-tight">
-          Analyse en profondeur
+          {isBatch ? `Document ${current} sur ${total}` : "Analyse en profondeur"}
         </h2>
+        {fileName && (
+          <p className="text-sand-500/80 font-sans text-sm truncate max-w-xs mx-auto">{fileName}</p>
+        )}
         <p className="text-white/40 font-sans text-sm md:text-base">
           L'intelligence artificielle distille l'essence du document.
         </p>
+        {isBatch && (
+          <div className="w-full max-w-xs mx-auto mt-2">
+            <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-sand-500 rounded-full transition-all duration-700"
+                style={{ width: `${((current! - 1) / total!) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="w-full max-w-sm flex flex-col gap-4 relative">
         <div className="absolute left-4 top-4 bottom-4 w-px bg-white/10"></div>
-        
+
         {LOADING_STEPS.map((step, index) => {
           const Icon = step.icon;
           const isPast = index < currentStep;
           const isCurrent = index === currentStep;
-          
+
           return (
-            <div 
-              key={step.id} 
+            <div
+              key={step.id}
               className={cn(
                 "flex items-center gap-4 p-3 rounded-xl transition-all duration-700 relative z-10",
                 isCurrent ? "bg-white/5 border border-white/10 shadow-lg" : "bg-transparent border border-transparent",

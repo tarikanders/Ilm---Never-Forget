@@ -12,6 +12,7 @@ export interface MindMapNode {
 
 export interface SummaryData {
   id?: string;
+  userId?: string;
   title: string;
   author: string;
   category: string;

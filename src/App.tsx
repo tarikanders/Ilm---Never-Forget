@@ -22,6 +22,7 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isZenMode, setIsZenMode] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
   
   const [library, setLibrary] = useState<SummaryData[]>(() => {
     try {
@@ -105,46 +106,71 @@ export default function App() {
     });
   }, [library, searchQuery, selectedTag, selectedAuthor]);
 
-  const handleUpload = async (file: File, depth: string) => {
-    setAppState("loading");
-    setErrorMessage(null);
-    
-    // Upload via multipart form
+  const processSingleFile = async (file: File, depth: string): Promise<SummaryData> => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("depth", depth);
 
-    try {
-      const response = await fetch("/api/summarize", {
-        method: "POST",
-        body: formData,
-      });
+    const response = await fetch("/api/summarize", {
+      method: "POST",
+      body: formData,
+    });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to process the document.");
-      }
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || `Échec du traitement de "${file.name}".`);
+    }
 
-      const data: SummaryData = await response.json();
-      const newSummary = { ...data, id: Date.now().toString(), userId: currentUser?.uid || "local", createdAt: new Date().toISOString() };
-      
-      setSummaryData(newSummary);
-      
-      if (currentUser) {
-        try {
-          await setDoc(doc(db, `users/${currentUser.uid}/summaries`, newSummary.id), newSummary);
-        } catch (error) {
-          handleFirestoreError(error, "create" as any, `users/${currentUser.uid}/summaries/${newSummary.id}`);
+    const data: SummaryData = await response.json();
+    return {
+      ...data,
+      id: Date.now().toString(),
+      userId: currentUser?.uid || "local",
+      createdAt: new Date().toISOString(),
+    };
+  };
+
+  const handleUpload = async (files: File[], depth: string) => {
+    setAppState("loading");
+    setErrorMessage(null);
+
+    const errors: string[] = [];
+    let lastSummary: SummaryData | null = null;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setBatchProgress({ current: i + 1, total: files.length, fileName: file.name });
+
+      try {
+        const newSummary = await processSingleFile(file, depth);
+        lastSummary = newSummary;
+
+        if (currentUser) {
+          try {
+            await setDoc(doc(db, `users/${currentUser.uid}/summaries`, newSummary.id), newSummary);
+          } catch (error) {
+            handleFirestoreError(error, "create" as any, `users/${currentUser.uid}/summaries/${newSummary.id}`);
+          }
+        } else {
+          setLibrary((prev) => [newSummary, ...prev]);
         }
-      } else {
-        setLibrary((prev) => [newSummary, ...prev]);
+      } catch (error: any) {
+        console.error(error);
+        errors.push(error.message || `Erreur sur "${file.name}".`);
       }
-      
+    }
+
+    setBatchProgress(null);
+
+    if (errors.length > 0) {
+      setErrorMessage(errors.join(" | "));
+    }
+
+    if (files.length === 1 && lastSummary) {
+      setSummaryData(lastSummary);
       setAppState("summary");
-    } catch (error: any) {
-      console.error(error);
-      setErrorMessage(error.message || "Une erreur inattendue est survenue.");
-      setAppState("upload");
+    } else {
+      setAppState(lastSummary ? "library" : "upload");
     }
   };
 
@@ -234,7 +260,11 @@ export default function App() {
         )}
 
         {appState === "loading" && (
-          <LoadingView />
+          <LoadingView
+            current={batchProgress?.current}
+            total={batchProgress?.total}
+            fileName={batchProgress?.fileName}
+          />
         )}
 
         {appState === "summary" && summaryData && (
@@ -243,6 +273,11 @@ export default function App() {
 
         {appState === "library" && (
            <div className="w-full max-w-4xl mx-auto flex flex-col gap-12 animate-in fade-in slide-in-from-bottom-8 duration-700">
+             {errorMessage && (
+               <div className="bg-red-500/10 border border-red-500/20 text-red-500 rounded-lg px-6 py-4 animate-in fade-in text-center font-sans text-sm">
+                 {errorMessage}
+               </div>
+             )}
              <header className="flex flex-col md:flex-row gap-6 md:items-end justify-between border-b border-white/10 pb-8">
                <div className="space-y-4">
                  <h1 className="text-4xl lg:text-5xl font-serif text-sand-100">Ma Bibliothèque</h1>
