@@ -2,15 +2,11 @@ import express from "express";
 import path from "path";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import Anthropic from "@anthropic-ai/sdk";
 import { PDFParse } from "pdf-parse";
-import { EPub } from "epub2";
-import { convert } from "html-to-text";
-import fs from "fs";
-import os from "os";
+import { extractTextFromEpub } from "./epub";
 import cors from "cors";
 import dotenv from "dotenv";
-import { jsonrepair } from "jsonrepair";
 
 dotenv.config();
 
@@ -27,62 +23,70 @@ const upload = multer({
   },
 });
 
-const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
+const getAnthropicClient = () => {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not set.");
+    throw new Error("ANTHROPIC_API_KEY is not set.");
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
+  return new Anthropic({ apiKey });
+};
+
+const summaryTool: Anthropic.Tool = {
+  name: "provide_summary",
+  description: "Fournit un résumé structuré du document analysé.",
+  input_schema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Inférer le titre du document ou du livre." },
+      author: { type: "string", description: "Inférer l'auteur si possible, sinon 'Auteur inconnu'." },
+      category: { type: "string", description: "Une étiquette de catégorie globale (ex: Islam, Philosophie, Développement personnel, etc.)." },
+      centralIdea: { type: "string", description: "Une idée centrale ou thèse principale de 2-3 phrases." },
+      keyConcepts: {
+        type: "array",
+        description: "Concepts clés bien structurés avec explications détaillées et exemples.",
+        items: {
+          type: "object",
+          properties: {
+            concept: { type: "string", description: "Le nom du concept." },
+            explanation: { type: "string", description: "Explication courte du concept (1-2 phrases)." },
+            details: { type: "string", description: "Détails approfondis et structurés sur ce concept." },
+            example: { type: "string", description: "Un exemple concret pour illustrer le concept." },
+          },
+          required: ["concept", "explanation", "details", "example"],
+        },
+      },
+      memorableQuotes: {
+        type: "array",
+        description: "Maximum 5 citations mémorables extraites du texte.",
+        items: { type: "string" },
+      },
+      practicalLessons: {
+        type: "array",
+        description: "Maximum 5 leçons pratiques tirées du document.",
+        items: { type: "string" },
+      },
+      mindMap: {
+        type: "array",
+        description: "Une hiérarchie de concepts pour une carte mentale. Max 15 nœuds. Ex: [ { parent: 'Racine', child: 'Branche A' } ]",
+        items: {
+          type: "object",
+          properties: {
+            parent: { type: "string" },
+            child: { type: "string" },
+          },
+          required: ["parent", "child"],
+        },
+      },
+      keywords: {
+        type: "array",
+        description: "5 à 10 mots-clés unifiés (en minuscules) pour lier ce document à d'autres dans une base de connaissances.",
+        items: { type: "string" },
       },
     },
-  });
+    required: ["title", "author", "category", "centralIdea", "keyConcepts", "memorableQuotes", "practicalLessons", "mindMap", "keywords"],
+  },
 };
 
-const extractTextFromEpub = async (buffer: Buffer): Promise<string> => {
-  const tmpPath = path.join(os.tmpdir(), `temp-${Date.now()}.epub`);
-  fs.writeFileSync(tmpPath, buffer);
-
-  return new Promise((resolve, reject) => {
-    const epub = new (EPub as any)(tmpPath);
-    
-    epub.on("end", async () => {
-      try {
-        let fullText = "";
-        for (const chapter of epub.flow) {
-          if (!chapter.id) continue;
-          const chapterHtml = await new Promise<string>((res, rej) => {
-            epub.getChapter(chapter.id, (err: any, text: string) => {
-              if (err) rej(err);
-              else res(text || "");
-            });
-          });
-          
-          if (chapterHtml) {
-            fullText += convert(chapterHtml, { wordwrap: false }) + "\n\n";
-          }
-        }
-        fs.unlinkSync(tmpPath);
-        resolve(fullText);
-      } catch (err) {
-        fs.unlinkSync(tmpPath);
-        reject(err);
-      }
-    });
-
-    epub.on("error", (err: any) => {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      reject(err);
-    });
-
-    epub.parse();
-  });
-};
-
-// Ensure clean error handling
 app.post("/api/summarize", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -110,16 +114,17 @@ app.post("/api/summarize", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Unsupported file type. Use PDF, EPUB, or TXT." });
     }
 
-    // Limit text length to prevent too huge prompts if needed, but Gemini 1.5/3.5 has 1M-2M context.
-    const maxChars = 2000000;
+    // claude-sonnet-4-6 has 200K token context. ~4 chars/token → 800K chars max.
+    // Reserve tokens for prompt structure and output.
+    const maxChars = 600000;
     if (textContent.length > maxChars) {
       textContent = textContent.substring(0, maxChars);
     }
 
-    const ai = getGeminiClient();
+    const ai = getAnthropicClient();
 
-    const isVeryLong = textContent.length > 500000;
-    
+    const isVeryLong = textContent.length > 300000;
+
     let depthInstructions = "";
     if (depth === "flash") {
       depthInstructions = "Soyez très concis, environ 1 page de résultat.";
@@ -135,129 +140,56 @@ app.post("/api/summarize", upload.single("file"), async (req, res) => {
 Toutes les réponses, concepts, et textes générés DOIVENT ÊTRE EN FRANÇAIS.
 Les concepts clés doivent être de véritables mini-cours : fournissez des explications claires et des exemples précis, tout en restant suffisamment synthétiques.
 ${depthInstructions}
-
-Assurez-vous que la réponse est spécifiquement organisée selon le schéma JSON suivant. Aucun formatage supplémentaire ou bloc markdown en dehors du JSON n'est autorisé.
+Incluez au maximum ${maxConcepts} concepts clés.
 
 Texte du document:
 ${textContent}`;
 
-    const responseSchema = {
-      type: Type.OBJECT,
-      properties: {
-        title: { type: Type.STRING, description: "Inférer le titre du document ou du livre." },
-        author: { type: Type.STRING, description: "Inférer l'auteur si possible, sinon 'Auteur inconnu'." },
-        category: { type: Type.STRING, description: "Une étiquette de catégorie globale (ex: Islam, Philosophie, Développement personnel, etc.)." },
-        centralIdea: { type: Type.STRING, description: "Une idée centrale ou thèse principale de 2-3 phrases." },
-        keyConcepts: {
-          type: Type.ARRAY,
-          description: `Maximum ${maxConcepts} concepts clés, bien structurés et accompagnés d'exemples.`,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              concept: { type: Type.STRING, description: "Le nom du concept." },
-              explanation: { type: Type.STRING, description: "Explication courte du concept (1-2 phrases)." },
-              details: { type: Type.STRING, description: "Détails approfondis et structurés sur ce concept." },
-              example: { type: Type.STRING, description: "Un exemple concret pour illustrer le concept." }
-            }
-          }
-        },
-        memorableQuotes: {
-          type: Type.ARRAY,
-          description: "Maximum 5 citations.",
-          items: {
-            type: Type.STRING
-          }
-        },
-        practicalLessons: {
-          type: Type.ARRAY,
-          description: "Maximum 5 leçons pratiques.",
-          items: {
-            type: Type.STRING
-          }
-        },
-        mindMap: {
-          type: Type.ARRAY,
-          description: "Une hiérarchie de concepts pour une carte mentale. Max 15 nœuds. Ex: [ { parent: 'Racine', child: 'Branche A' }, ... ]",
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              parent: { type: Type.STRING },
-              child: { type: Type.STRING }
-            }
-          }
-        },
-        keywords: {
-          type: Type.ARRAY,
-          description: "5 à 10 mots-clés unifiés (en minuscules) pour lier ce document à d'autres documents similaires dans une base de connaissances.",
-          items: {
-            type: Type.STRING
-          }
-        }
-      },
-      required: ["title", "author", "category", "centralIdea", "keyConcepts", "memorableQuotes", "practicalLessons", "mindMap", "keywords"]
-    };
-
-    let response;
+    let response: Anthropic.Message | undefined;
     let retries = 3;
-    
+
     while (retries > 0) {
       try {
-        response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: responseSchema,
-            maxOutputTokens: 8192,
-          }
+        response = await ai.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 8192,
+          tools: [summaryTool],
+          tool_choice: { type: "tool", name: "provide_summary" },
+          messages: [{ role: "user", content: prompt }],
         });
-        break; // Succès de la requête
+        break;
       } catch (err: any) {
         const errorMessage = err.message || "";
-        if (errorMessage.includes("503") || errorMessage.includes("UNAVAILABLE") || errorMessage.includes("high demand")) {
+        if (errorMessage.includes("overloaded") || errorMessage.includes("529") || errorMessage.includes("rate_limit")) {
           retries--;
-          console.warn(`Erreur 503 (Surcharge des serveurs). Tentatives restantes: ${retries}`);
+          console.warn(`API overloaded. Retries remaining: ${retries}`);
           if (retries === 0) throw err;
-          // Attente de 3 secondes avant de réessayer
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          await new Promise((resolve) => setTimeout(resolve, 3000));
         } else {
           throw err;
         }
       }
     }
 
-    let responseText = response?.text || "{}";
-    responseText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
-    let parsedData;
-    try {
-      parsedData = JSON.parse(responseText);
-    } catch (parseErr) {
-      console.error("JSON formatting error. Truncated output? Attempting repair...", parseErr);
-      try {
-        const repaired = jsonrepair(responseText);
-        parsedData = JSON.parse(repaired);
-        console.log("Successfully repaired truncated JSON.");
-      } catch (repairErr) {
-        console.error("Repair failed:", repairErr);
-        return res.status(500).json({ error: "Le document est extrêmement long ou complexe, et l'analyse a échoué. Veuillez réessayer avec un extrait plus court." });
-      }
+    const toolUseBlock = response?.content.find((b) => b.type === "tool_use") as Anthropic.ToolUseBlock | undefined;
+    if (!toolUseBlock) {
+      throw new Error("No structured output returned from AI.");
     }
-    res.json(parsedData);
+
+    res.json(toolUseBlock.input);
   } catch (err: any) {
     console.error("Error summarizing:", err);
-    
+
     const errorMessage = err.message || "";
-    if (errorMessage.includes("503") || errorMessage.includes("UNAVAILABLE") || errorMessage.includes("high demand")) {
+    if (errorMessage.includes("overloaded") || errorMessage.includes("529") || errorMessage.includes("rate_limit")) {
       return res.status(503).json({ error: "Les serveurs d'IA sont actuellement très sollicités. Veuillez patienter et réessayer dans quelques instants." });
     }
-    
+
     res.status(500).json({ error: errorMessage || "Failed to process document" });
   }
 });
 
-
 async function startServer() {
-  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -265,10 +197,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
 

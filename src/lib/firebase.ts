@@ -1,10 +1,26 @@
+/// <reference types="vite/client" />
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, collection, getDocs, setDoc, deleteDoc, query, onSnapshot, orderBy } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import fileConfig from '../../firebase-applet-config.json';
+
+// Env vars (VITE_*) take priority over the bundled config file.
+// This lets you point the app at your own Firebase project without touching the JSON file.
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || fileConfig.apiKey,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || fileConfig.authDomain,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || fileConfig.projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || fileConfig.storageBucket,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || fileConfig.messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || fileConfig.appId,
+};
+
+// Use "(default)" for normal Firebase projects; AI Studio uses a custom named database.
+const firestoreDatabaseId: string =
+  import.meta.env.VITE_FIREBASE_DATABASE_ID || fileConfig.firestoreDatabaseId || "(default)";
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); // CRITICAL: The app will break without this line
+export const db = getFirestore(app, firestoreDatabaseId);
 export const auth = getAuth();
 export const googleProvider = new GoogleAuthProvider();
 
@@ -61,7 +77,6 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate connection
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
