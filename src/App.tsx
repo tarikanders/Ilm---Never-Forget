@@ -106,6 +106,26 @@ export default function App() {
     });
   }, [library, searchQuery, selectedTag, selectedAuthor]);
 
+  /** Charger le texte source pour le chat — localStorage d'abord, puis Firestore */
+  const loadSourceText = async (id: string): Promise<string | null> => {
+    const local = localStorage.getItem(`ilm-source-${id}`);
+    if (local) return local;
+    // Si connecté, essayer Firestore
+    if (currentUser) {
+      try {
+        const { getDoc } = await import("firebase/firestore");
+        const snap = await getDoc(doc(db, `users/${currentUser.uid}/sources`, id));
+        if (snap.exists()) {
+          const text = snap.data().text as string;
+          // Mettre en cache local
+          try { localStorage.setItem(`ilm-source-${id}`, text); } catch {}
+          return text;
+        }
+      } catch {}
+    }
+    return null;
+  };
+
   const processSingleFile = async (file: File, depth: string): Promise<SummaryData> => {
     const formData = new FormData();
     formData.append("file", file);
@@ -121,12 +141,22 @@ export default function App() {
       throw new Error(errData.error || `Échec du traitement de "${file.name}".`);
     }
 
-    const data: SummaryData = await response.json();
+    const raw: SummaryData = await response.json();
+    const id = Date.now().toString();
+
+    // Persister le sourceText séparément (localStorage + Firestore)
+    if (raw.sourceText) {
+      try { localStorage.setItem(`ilm-source-${id}`, raw.sourceText); } catch {}
+    }
+
+    const { sourceText: _st, ...summaryWithoutSource } = raw;
     return {
-      ...data,
-      id: Date.now().toString(),
+      ...summaryWithoutSource,
+      id,
       userId: currentUser?.uid || "local",
       createdAt: new Date().toISOString(),
+      // Conserver sourceText en mémoire pour la session courante uniquement
+      sourceText: raw.sourceText,
     };
   };
 
@@ -145,9 +175,16 @@ export default function App() {
         const newSummary = await processSingleFile(file, depth);
         lastSummary = newSummary;
 
+        // Ne stocker QUE le résumé (sans sourceText) dans Firestore / localStorage
+        const { sourceText: _st, ...summaryToStore } = newSummary;
+
         if (currentUser) {
           try {
-            await setDoc(doc(db, `users/${currentUser.uid}/summaries`, newSummary.id), newSummary);
+            await setDoc(doc(db, `users/${currentUser.uid}/summaries`, newSummary.id!), summaryToStore);
+            // Stocker le sourceText dans une collection séparée (documents légers)
+            if (_st && newSummary.id) {
+              await setDoc(doc(db, `users/${currentUser.uid}/sources`, newSummary.id), { text: _st }).catch(() => {});
+            }
           } catch (error) {
             handleFirestoreError(error, "create" as any, `users/${currentUser.uid}/summaries/${newSummary.id}`);
           }
@@ -268,7 +305,12 @@ export default function App() {
         )}
 
         {appState === "summary" && summaryData && (
-          <SummaryView data={summaryData} isZenMode={isZenMode} setIsZenMode={setIsZenMode} />
+          <SummaryView
+            data={summaryData}
+            isZenMode={isZenMode}
+            setIsZenMode={setIsZenMode}
+            loadSourceText={loadSourceText}
+          />
         )}
 
         {appState === "library" && (

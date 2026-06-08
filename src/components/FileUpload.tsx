@@ -14,7 +14,9 @@ export function FileUpload({ onUpload }: FileUploadProps) {
   const addFiles = (incoming: FileList | null) => {
     if (!incoming) return;
     const valid = Array.from(incoming).filter(f =>
-      /\.(pdf|txt|epub)$/i.test(f.name) || f.type === "application/epub+zip"
+      /\.(pdf|txt|epub|md|markdown)$/i.test(f.name) ||
+      f.type === "application/epub+zip" ||
+      f.type === "text/markdown"
     );
     setFiles(prev => {
       const names = new Set(prev.map(f => f.name));
@@ -72,7 +74,7 @@ export function FileUpload({ onUpload }: FileUploadProps) {
       >
         <input
           type="file"
-          accept=".pdf,.txt,.epub,application/epub+zip"
+          accept=".pdf,.txt,.epub,.md,.markdown,application/epub+zip,text/markdown"
           multiple
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
           onChange={handleChange}
@@ -116,10 +118,11 @@ export function FileUpload({ onUpload }: FileUploadProps) {
                   Glissez-déposez un ou plusieurs documents, ou cliquez pour parcourir
                 </p>
               </div>
-              <div className="flex gap-2 mt-2">
+              <div className="flex gap-2 mt-2 flex-wrap justify-center">
                 <span className="px-2.5 py-1 rounded bg-white/5 font-mono text-xs text-white/40">.PDF</span>
                 <span className="px-2.5 py-1 rounded bg-white/5 font-mono text-xs text-white/40">.EPUB</span>
                 <span className="px-2.5 py-1 rounded bg-white/5 font-mono text-xs text-white/40">.TXT</span>
+                <span className="px-2.5 py-1 rounded bg-white/5 font-mono text-xs text-white/40">.MD</span>
               </div>
             </div>
           )}

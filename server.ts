@@ -82,9 +82,39 @@ const summaryTool: Anthropic.Tool = {
         description: "5 à 10 mots-clés unifiés (en minuscules) pour lier ce document à d'autres dans une base de connaissances.",
         items: { type: "string" },
       },
+      conceptLinks: {
+        type: "array",
+        description: "Liens sémantiques entre les concepts clés du document. Max 12. Exemples de relation : 'mène à', 'prérequis', 's\\'oppose à', 'complète', 'illustre'.",
+        items: {
+          type: "object",
+          properties: {
+            from: { type: "string", description: "Nom du concept source (doit correspondre exactement à un concept de keyConcepts ou mindMap)." },
+            to:   { type: "string", description: "Nom du concept cible." },
+            relation: { type: "string", description: "Libellé court de la relation (≤ 5 mots)." },
+          },
+          required: ["from", "to", "relation"],
+        },
+      },
     },
     required: ["title", "author", "category", "centralIdea", "keyConcepts", "memorableQuotes", "practicalLessons", "mindMap", "keywords"],
   },
+};
+
+// ─── Openverse image helper (uses global fetch, Node 18+) ────────────────────
+const fetchThematicImage = async (query: string): Promise<string | null> => {
+  try {
+    const q = encodeURIComponent(query.slice(0, 100));
+    const url = `https://api.openverse.org/v1/images/?q=${q}&license_type=commercial&page_size=1&format=json`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(4000),
+      headers: { "User-Agent": "Ilm/1.0" },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as any;
+    return json?.results?.[0]?.url ?? null;
+  } catch {
+    return null;
+  }
 };
 
 app.post("/api/summarize", upload.single("file"), async (req, res) => {
@@ -95,9 +125,11 @@ app.post("/api/summarize", upload.single("file"), async (req, res) => {
 
     const { depth } = req.body; // 'flash', 'standard', 'deep'
     const mimeType = req.file.mimetype;
-    const isPDF = req.file.originalname.toLowerCase().endsWith(".pdf") || mimeType === "application/pdf";
-    const isTXT = req.file.originalname.toLowerCase().endsWith(".txt") || mimeType === "text/plain";
-    const isEPUB = req.file.originalname.toLowerCase().endsWith(".epub") || mimeType === "application/epub+zip";
+    const fname = req.file.originalname.toLowerCase();
+    const isPDF  = fname.endsWith(".pdf") || mimeType === "application/pdf";
+    const isTXT  = fname.endsWith(".txt") || mimeType === "text/plain";
+    const isEPUB = fname.endsWith(".epub") || mimeType === "application/epub+zip";
+    const isMD   = fname.endsWith(".md") || fname.endsWith(".markdown") || mimeType === "text/markdown";
     let textContent = "";
 
     console.log("Uploaded file:", req.file.originalname, "size:", req.file.size, "mimetype:", mimeType);
@@ -106,12 +138,12 @@ app.post("/api/summarize", upload.single("file"), async (req, res) => {
       const pdf = new PDFParse({ data: new Uint8Array(req.file.buffer) });
       const data = await pdf.getText();
       textContent = data.text;
-    } else if (isTXT) {
+    } else if (isTXT || isMD) {
       textContent = req.file.buffer.toString("utf-8");
     } else if (isEPUB) {
       textContent = await extractTextFromEpub(req.file.buffer);
     } else {
-      return res.status(400).json({ error: "Unsupported file type. Use PDF, EPUB, or TXT." });
+      return res.status(400).json({ error: "Type de fichier non supporté. Utilisez PDF, EPUB, TXT ou Markdown." });
     }
 
     // claude-sonnet-4-6 has 200K token context. ~4 chars/token → 800K chars max.
@@ -176,7 +208,30 @@ ${textContent}`;
       throw new Error("No structured output returned from AI.");
     }
 
-    res.json(toolUseBlock.input);
+    const summary = toolUseBlock.input as any;
+
+    // ── Enrich with thematic images (best-effort, parallel) ──────────────────
+    const heroQuery = `${summary.title} ${summary.category}`;
+    const conceptQueries: string[] = (summary.keyConcepts ?? []).map(
+      (c: any) => `${c.concept} ${summary.category}`
+    );
+
+    const [heroResult, ...conceptResults] = await Promise.allSettled([
+      fetchThematicImage(heroQuery),
+      ...conceptQueries.map(fetchThematicImage),
+    ]);
+
+    if (heroResult.status === "fulfilled" && heroResult.value) {
+      summary.heroImage = heroResult.value;
+    }
+    conceptResults.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value && summary.keyConcepts?.[i]) {
+        summary.keyConcepts[i].image = r.value;
+      }
+    });
+
+    // ── Return summary + sourceText (for chat, not stored in Firestore) ──────
+    res.json({ ...summary, sourceText: textContent.slice(0, 300000) });
   } catch (err: any) {
     console.error("Error summarizing:", err);
 
@@ -189,14 +244,72 @@ ${textContent}`;
   }
 });
 
-async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+// ─── Chat endpoint ────────────────────────────────────────────────────────────
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { question, sourceText, summary } = req.body as {
+      question: string;
+      sourceText?: string;
+      summary: Record<string, unknown>;
+    };
+
+    if (!question?.trim()) {
+      return res.status(400).json({ error: "Question vide." });
+    }
+
+    const ai = getAnthropicClient();
+
+    let context: string;
+    if (sourceText && sourceText.length > 200) {
+      context = `Voici le texte source du document (extrait) :\n\n${sourceText.slice(0, 250000)}`;
+    } else {
+      context = `Voici le résumé structuré du document :\n\n${JSON.stringify(summary, null, 2)}`;
+    }
+
+    const systemPrompt =
+      "Tu es un assistant pédagogique. Réponds uniquement en français et exclusivement d'après le document fourni. " +
+      "Si l'information n'est pas dans le document, dis-le clairement. " +
+      "Sois précis, concis et cite le document quand c'est utile.";
+
+    const message = await ai.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [
+        { role: "user", content: `${context}\n\n---\n\nQuestion : ${question}` },
+      ],
     });
-    app.use(vite.middlewares);
-  } else {
+
+    const answer = message.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as Anthropic.TextBlock).text)
+      .join("\n");
+
+    res.json({ answer });
+  } catch (err: any) {
+    console.error("Chat error:", err);
+    res.status(500).json({ error: err.message || "Erreur lors de la réponse." });
+  }
+});
+
+async function startServer() {
+  const isProduction = process.env.NODE_ENV === "production";
+  const apiOnly = process.env.API_ONLY === "true";
+
+  if (!isProduction && !apiOnly) {
+    // Production-like: integrate Vite as middleware.
+    // On Windows dev this may fail due to tsx/ESM path issue — use API_ONLY=true
+    // and run `npx vite dev` separately instead.
+    try {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.warn("⚠ Vite middleware failed to start — run `npx vite dev` separately.");
+    }
+  } else if (isProduction) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -206,6 +319,9 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+    if (!isProduction && apiOnly) {
+      console.log("  API-only mode — run `npx vite dev` for the frontend (port 5173)");
+    }
   });
 }
 
