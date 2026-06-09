@@ -102,6 +102,35 @@ body {
   }
 }
 
+/* ── Orbs animés (fond feed) ─────────────────────────────────────────────── */
+@keyframes orb1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%       { transform: translate(8%, -12%) scale(1.08); }
+  66%       { transform: translate(-6%, 8%) scale(0.94); }
+}
+@keyframes orb2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40%       { transform: translate(-10%, 6%) scale(1.12); }
+  70%       { transform: translate(6%, -10%) scale(0.88); }
+}
+@keyframes orb3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25%       { transform: translate(6%, 10%) scale(0.92); }
+  75%       { transform: translate(-8%, -6%) scale(1.06); }
+}
+.orb-1 { animation: orb1 14s ease-in-out infinite; }
+.orb-2 { animation: orb2 18s ease-in-out infinite; }
+.orb-3 { animation: orb3 22s ease-in-out infinite; }
+
+/* ── Bottom sheet slide-up ───────────────────────────────────────────────── */
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.sheet-slide-up {
+  animation: sheet-up 0.35s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
 /* ── Feed : force toujours dark, indépendamment du thème système ─────────── */
 .feed-dark {
   --th-sand-100: #F6F1E5;
