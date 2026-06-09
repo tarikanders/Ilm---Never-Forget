@@ -8,15 +8,16 @@ import { FileUpload } from "./components/FileUpload";
 import { SummaryView } from "./components/SummaryView";
 import { GraphView } from "./components/GraphView";
 import { LoadingView } from "./components/LoadingView";
+import { FeedView } from "./components/FeedView";
 import { SummaryData } from "./types";
-import { BookMarked, Loader2, Library, ArrowLeft, Search, List, Network, LogIn, LogOut, Tags, UserCircle } from "lucide-react";
+import { BookMarked, Loader2, Library, ArrowLeft, Search, List, Network, LogIn, LogOut, Tags, UserCircle, Plus, Sparkles } from "lucide-react";
 import { cn } from "./lib/utils";
 import { auth, db, signInWithGoogle, logout, handleFirestoreError } from "./lib/firebase";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, query, onSnapshot, setDoc, doc, deleteDoc } from "firebase/firestore";
 
 export default function App() {
-  const [appState, setAppState] = useState<"upload" | "loading" | "summary" | "library">("upload");
+  const [appState, setAppState] = useState<"feed" | "upload" | "loading" | "summary" | "library">("feed");
   const [libraryView, setLibraryView] = useState<"list" | "graph">("list");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -216,6 +217,46 @@ export default function App() {
     setAppState("summary");
   };
 
+  // ─── Feed plein-écran (écran d'accueil par défaut) ──────────────────────────
+  // FeedView est full-bleed (h-100dvh, snap-scroll) → on bypasse le layout paddé.
+  if (appState === "feed") {
+    return (
+      <div className="relative h-[100dvh] w-full bg-ink-900 selection:bg-sand-500/30 selection:text-sand-100">
+        {/* Nav flottante minimale */}
+        <div className="fixed top-0 inset-x-0 z-40 flex justify-between items-center px-4 py-3 bg-gradient-to-b from-ink-900/80 to-transparent pointer-events-none">
+          <button
+            onClick={() => setAppState("upload")}
+            className="flex items-center gap-2 group pointer-events-auto"
+          >
+            <BookMarked className="w-5 h-5 text-sand-500 group-hover:rotate-12 transition-transform duration-300" />
+            <span className="text-lg font-serif tracking-wide font-medium">Ilm.</span>
+          </button>
+          <div className="flex items-center gap-2 pointer-events-auto">
+            {library.length > 0 && (
+              <button
+                onClick={() => setAppState("library")}
+                className="flex items-center gap-2 px-3 py-2 rounded-full border border-white/10 hover:border-white/20 hover:bg-white/5 transition-colors text-sm font-sans bg-ink-800/60 backdrop-blur-sm"
+                title="Ma Bibliothèque"
+              >
+                <Library className="w-4 h-4 text-sand-500" />
+                <span className="hidden sm:inline">Bibliothèque</span>
+              </button>
+            )}
+            <button
+              onClick={() => setAppState("upload")}
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-sand-500 text-ink-900 hover:bg-sand-300 transition-colors"
+              title="Nouveau document"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <FeedView library={library} onOpenSource={loadFromLibrary} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col items-center px-4 md:px-8 py-8 md:py-16 selection:bg-sand-500/30 selection:text-sand-100">
       
@@ -251,8 +292,17 @@ export default function App() {
                </button>
             )}
 
+            <button
+              onClick={() => setAppState("feed")}
+              className="flex items-center gap-2 px-4 py-2 rounded-full border border-sand-500/30 text-sand-500 hover:bg-sand-500 hover:text-ink-900 transition-colors text-sm font-sans"
+              title="Feed de révision"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span className="hidden sm:inline">Feed</span>
+            </button>
+
             {appState !== "library" && library.length > 0 && (
-              <button 
+              <button
                 onClick={() => setAppState("library")}
                 className="flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 hover:border-white/20 hover:bg-white/5 transition-colors text-sm font-sans bg-white/5"
               >
