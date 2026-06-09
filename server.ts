@@ -146,7 +146,7 @@ app.post("/api/summarize", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Type de fichier non supporté. Utilisez PDF, EPUB, TXT ou Markdown." });
     }
 
-    // claude-sonnet-4-6 has 200K token context. ~4 chars/token → 800K chars max.
+    // claude-haiku-4-5-20251001 has 200K token context. ~4 chars/token → 800K chars max.
     // Reserve tokens for prompt structure and output.
     const maxChars = 600000;
     if (textContent.length > maxChars) {
@@ -183,7 +183,7 @@ ${textContent}`;
     while (retries > 0) {
       try {
         response = await ai.messages.create({
-          model: "claude-sonnet-4-6",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 8192,
           tools: [summaryTool],
           tool_choice: { type: "tool", name: "provide_summary" },
@@ -272,7 +272,7 @@ app.post("/api/chat", async (req, res) => {
       "Sois précis, concis et cite le document quand c'est utile.";
 
     const message = await ai.messages.create({
-      model: "claude-sonnet-4-6",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       system: systemPrompt,
       messages: [
