@@ -105,8 +105,8 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
           <div className="absolute inset-0 bg-gradient-to-t from-ink-900 via-ink-900/70 to-ink-900/40" />
         </div>
 
-        {/* Contenu principal — centré verticalement */}
-        <div className="flex-1 flex flex-col justify-end pb-6 px-5 md:px-8 pt-20 overflow-hidden">
+        {/* Contenu principal */}
+        <div className="flex-1 flex flex-col justify-end pb-safe-feed px-5 pr-20 md:pr-10 md:px-8 pt-safe-content overflow-y-auto">
           {/* Badge type + catégorie */}
           <div className="flex items-center gap-2 mb-4">
             <span className={cn("flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase", config.accentClass)}>
@@ -175,12 +175,12 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
             </span>
           </div>
 
-          {/* Espace pour la bottom bar */}
-          <div className="h-16" aria-hidden />
+          {/* Espace pour la bottom bar + safe area */}
+          <div className="h-safe-spacer" aria-hidden />
         </div>
 
         {/* Rail d'actions vertical — droite, style TikTok */}
-        <div className="absolute right-4 bottom-24 flex flex-col items-center gap-5">
+        <div className="absolute right-3 bottom-safe-rail flex flex-col items-center gap-4">
           {/* Like */}
           <ActionBtn
             onClick={handleLike}
@@ -242,7 +242,7 @@ function ActionBtn({ onClick, active, activeClass, label, children }: ActionBtnP
       onClick={onClick}
       aria-label={label}
       className={cn(
-        "flex flex-col items-center gap-0.5 p-2 rounded-full text-white/60 hover:text-white transition-colors active:scale-90",
+        "flex flex-col items-center gap-0.5 p-2.5 min-w-[44px] min-h-[44px] justify-center rounded-2xl text-white/60 hover:text-white transition-colors active:scale-90",
         active && activeClass
       )}
     >

@@ -102,6 +102,38 @@ body {
   }
 }
 
+/* ── Feed : force toujours dark, indépendamment du thème système ─────────── */
+.feed-dark {
+  --th-sand-100: #F6F1E5;
+  --th-sand-300: #E5DBBE;
+  --th-sand-500: #C9A84C;
+  --th-sand-700: #B0923E;
+  --th-ink-900: #080808;
+  --th-ink-800: #111111;
+  --th-ink-700: #1A1A1A;
+  --th-ink-600: #2C2C2C;
+  --th-white: #ffffff;
+  --th-black: #000000;
+  color-scheme: dark;
+}
+
+/* ── Safe area utilities (iPhone notch / home bar) ───────────────────────── */
+.pt-safe-nav {
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+}
+.pb-safe-feed {
+  padding-bottom: max(1.5rem, calc(1rem + env(safe-area-inset-bottom, 0px)));
+}
+.bottom-safe-rail {
+  bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+}
+.h-safe-spacer {
+  height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+}
+.pt-safe-content {
+  padding-top: calc(4rem + env(safe-area-inset-top, 0px));
+}
+
 @media print {
   body {
     background-color: white;

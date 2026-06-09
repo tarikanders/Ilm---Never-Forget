@@ -221,9 +221,9 @@ export default function App() {
   // FeedView est full-bleed (h-100dvh, snap-scroll) → on bypasse le layout paddé.
   if (appState === "feed") {
     return (
-      <div className="relative h-[100dvh] w-full bg-ink-900 selection:bg-sand-500/30 selection:text-sand-100">
+      <div className="feed-dark relative h-[100dvh] w-full bg-ink-900 selection:bg-sand-500/30 selection:text-sand-100">
         {/* Nav flottante minimale */}
-        <div className="fixed top-0 inset-x-0 z-40 flex justify-between items-center px-4 py-3 bg-gradient-to-b from-ink-900/80 to-transparent pointer-events-none">
+        <div className="fixed top-0 inset-x-0 z-40 flex justify-between items-center px-4 pt-safe-nav pb-3 bg-gradient-to-b from-ink-900/95 via-ink-900/60 to-transparent pointer-events-none">
           <button
             onClick={() => setAppState("upload")}
             className="flex items-center gap-2 group pointer-events-auto"
