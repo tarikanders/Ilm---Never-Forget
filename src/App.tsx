@@ -14,6 +14,8 @@ import { BookMarked, Loader2, Library, ArrowLeft, Search, List, Network, LogIn, 
 import { cn } from "./lib/utils";
 import { auth, db, signInWithGoogle, logout, handleFirestoreError } from "./lib/firebase";
 import { audioController } from "./lib/audioController";
+import { buildNuggets } from "./lib/nuggets";
+import { enqueuePrefetch } from "./lib/nuggetAudio";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, query, onSnapshot, setDoc, doc, deleteDoc } from "firebase/firestore";
 
@@ -214,6 +216,13 @@ export default function App() {
         } else {
           setLibrary((prev) => [newSummary, ...prev]);
         }
+
+        // Pré-générer les 3 premiers clips audio en arrière-plan (fire-and-forget).
+        // Coût payé une seule fois → cache L1 + Firebase → prochain lancement instantané.
+        try {
+          const warm = buildNuggets([newSummary]).slice(0, 3);
+          enqueuePrefetch(warm, currentUser?.uid ?? "local");
+        } catch {}
       } catch (error: any) {
         console.error(error);
         errors.push(error.message || `Erreur sur "${file.name}".`);

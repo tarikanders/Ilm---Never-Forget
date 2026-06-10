@@ -12,7 +12,8 @@
  */
 
 import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
-import { storage } from "./firebase";
+import { doc, getDoc, setDoc, arrayUnion } from "firebase/firestore";
+import { storage, db as fsdb } from "./firebase";
 import { DialogueTurn, Nugget, NuggetScript } from "../types";
 
 // ─── IndexedDB cache (L1) ─────────────────────────────────────────────────────
@@ -60,6 +61,44 @@ async function idbSet(store: string, key: string, value: unknown): Promise<void>
   } catch {
     // Fail silently — sera re-généré au prochain chargement
   }
+}
+
+async function idbGetAllKeys(store: string): Promise<string[]> {
+  try {
+    const db = await openAudioDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, "readonly");
+      const req = tx.objectStore(store).getAllKeys();
+      req.onsuccess = () => resolve((req.result as IDBValidKey[]).map(String));
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return [];
+  }
+}
+
+// ─── Manifest Firestore des clips générés (L2, cross-device) ─────────────────
+// users/{uid}/meta/audioIndex = { ids: string[] }
+// Permet de connaître, en un seul getDoc, tous les nuggets déjà sonorisés sur le
+// compte — sans sonder Storage nugget par nugget.
+
+function manifestRef(uid: string) {
+  return doc(fsdb, `users/${uid}/meta`, "audioIndex");
+}
+
+async function manifestGetIds(uid: string): Promise<string[]> {
+  try {
+    const snap = await getDoc(manifestRef(uid));
+    const data = snap.data() as { ids?: string[] } | undefined;
+    return data?.ids ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function manifestAddId(uid: string, nuggetId: string): void {
+  // Fire-and-forget — merge pour ne pas écraser les ids existants
+  setDoc(manifestRef(uid), { ids: arrayUnion(nuggetId) }, { merge: true }).catch(() => {});
 }
 
 // ─── Dédoublonnage des requêtes en cours ─────────────────────────────────────
@@ -205,6 +244,8 @@ export function getOrGenerateAudio(
       const scriptBlob = new Blob([JSON.stringify(script)], { type: "application/json" });
       const scriptPath = storagePath(uid, key).replace(".wav", ".json");
       uploadBytes(ref(storage, scriptPath), scriptBlob, { contentType: "application/json" }).catch(() => {});
+      // Indexer dans le manifest pour le cache-first au prochain lancement
+      manifestAddId(uid, key);
     }
 
     return { url, script };
@@ -216,10 +257,66 @@ export function getOrGenerateAudio(
   return promise;
 }
 
+// ─── File de préchargement séquentielle (concurrence 1) ──────────────────────
+// Les générations sont coûteuses et le backend applique des limites de débit
+// (cf. retries dans server.ts). On sérialise les prefetch pour ne jamais lancer
+// plus d'une génération à la fois. La LECTURE réelle (getOrGenerateAudio appelé
+// directement pour jouer) n'est PAS soumise à la file et reste immédiate ; le
+// Map `inflight` déduplique play vs prefetch.
+
+const prefetchQueue: Array<() => Promise<void>> = [];
+const queuedIds = new Set<string>();
+let prefetchRunning = false;
+
+function pumpQueue(): void {
+  if (prefetchRunning) return;
+  const job = prefetchQueue.shift();
+  if (!job) return;
+  prefetchRunning = true;
+  job()
+    .catch(() => {})
+    .finally(() => {
+      prefetchRunning = false;
+      pumpQueue();
+    });
+}
+
 /**
- * Précharge l'audio d'un nugget sans le jouer.
- * Fire-and-forget : les erreurs sont silencieuses.
+ * Précharge l'audio d'un nugget sans le jouer (via la file séquentielle).
+ * Fire-and-forget : les erreurs sont silencieuses. No-op si déjà en cache,
+ * en cours de génération, ou déjà dans la file.
  */
 export function prefetchAudio(nugget: Nugget, uid: string | null): void {
-  getOrGenerateAudio(nugget, uid).catch(() => {});
+  const id = nugget.id;
+  if (inflight.has(id) || objectURLs.has(id) || queuedIds.has(id)) return;
+  queuedIds.add(id);
+  prefetchQueue.push(async () => {
+    try {
+      await getOrGenerateAudio(nugget, uid);
+    } finally {
+      queuedIds.delete(id);
+    }
+  });
+  pumpQueue();
+}
+
+/**
+ * Enfile un lot ordonné de nuggets pour préchargement séquentiel.
+ * Utilisé au upload (3 premiers) et pour la fenêtre glissante du feed.
+ */
+export function enqueuePrefetch(nuggets: Nugget[], uid: string | null): void {
+  for (const n of nuggets) prefetchAudio(n, uid);
+}
+
+/**
+ * Ensemble des nuggetIds dont l'audio est déjà disponible — sans rien générer.
+ * L1 : clés IndexedDB locales. L2 : manifest Firestore (si uid cloud).
+ * Sert au ré-ordonnancement « cache-first » du feed à l'ouverture.
+ */
+export async function getCachedAudioIds(uid: string | null): Promise<Set<string>> {
+  const ids = new Set<string>(await idbGetAllKeys(BLOB_STORE));
+  if (uid && uid !== "local") {
+    for (const id of await manifestGetIds(uid)) ids.add(id);
+  }
+  return ids;
 }

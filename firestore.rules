@@ -37,5 +37,16 @@ service cloud.firestore {
       allow delete: if isSignedIn()
                     && request.auth.uid == userId;
     }
+
+    // Métadonnées par utilisateur (ex: audioIndex = manifest des clips audio générés,
+    // pour le ré-ordonnancement cache-first cross-device du feed).
+    match /users/{userId}/meta/{docId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Texte source des documents (utilisé pour le chat). Persisté cross-device.
+    match /users/{userId}/sources/{docId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
   }
 }

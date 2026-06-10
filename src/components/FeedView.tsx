@@ -4,7 +4,7 @@ import { buildNuggets } from "../lib/nuggets";
 import { rankFeed, nextPage, DWELL_THRESHOLD_MS } from "../lib/feed";
 import { embedNuggets } from "../lib/embeddings";
 import { loadProfile, saveProfile, updateProfile, markSeen } from "../lib/taste";
-import { getOrGenerateAudio, prefetchAudio } from "../lib/nuggetAudio";
+import { getOrGenerateAudio, enqueuePrefetch, getCachedAudioIds } from "../lib/nuggetAudio";
 import { audioController } from "../lib/audioController";
 import { NuggetCard } from "./NuggetCard";
 import { Sparkles, BookOpen, Loader2, Volume2, VolumeX } from "lucide-react";
@@ -21,6 +21,28 @@ interface FeedViewProps {
 
 const PAGE_SIZE = 8;
 
+/** Fisher-Yates — mélange une copie (ne mute pas l'entrée). */
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Réordonne le pool « cache-first » : les nuggets dont l'audio est déjà généré
+ * passent en tête (mélangés pour la variété), le reste garde le classement par goût.
+ * → lecture instantanée à l'ouverture, sans attendre une génération à froid.
+ */
+function cacheFirst(ranked: Nugget[], cached: Set<string>): Nugget[] {
+  if (cached.size === 0) return ranked;
+  const hit = shuffle(ranked.filter((n) => cached.has(n.id)));
+  const miss = ranked.filter((n) => !cached.has(n.id));
+  return [...hit, ...miss];
+}
+
 /**
  * Feed vertical plein-écran type TikTok.
  * - Snap-scroll CSS (pas de lib externe)
@@ -35,6 +57,8 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
   const [profile, setProfileState] = useState<TasteProfile>(loadProfile);
   const [embProgress, setEmbProgress] = useState<{ done: number; total: number } | null>(null);
   const [isModelLoading, setIsModelLoading] = useState(false);
+  // Nuggets dont l'audio est déjà généré (cache L1 + manifest Firestore) → cache-first
+  const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
 
   // ─── Audio state ─────────────────────────────────────────────────────────────
   const [audioEnabled, setAudioEnabled] = useState<boolean>(() => {
@@ -69,6 +93,16 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     });
   }, [persistProfile]);
 
+  // ─── Index des clips déjà en cache (pour le ré-ordonnancement cache-first) ──
+
+  useEffect(() => {
+    let cancelled = false;
+    getCachedAudioIds(uid)
+      .then((ids) => { if (!cancelled) setCachedIds(ids); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [uid, library]);
+
   // ─── Construction du pool de nuggets ────────────────────────────────────────
 
   useEffect(() => {
@@ -79,14 +113,23 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     }
 
     const allNuggets = buildNuggets(library);
-    const ranked = rankFeed(allNuggets, embeddings, profile, Date.now());
+    const ranked = cacheFirst(rankFeed(allNuggets, embeddings, profile, Date.now()), cachedIds);
     setRankedPool(ranked);
 
     const first = nextPage(ranked, 0, PAGE_SIZE);
     setItems(first.items);
     setOffset(first.nextOffset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [library]); // re-seed seulement quand la bibliothèque change
+  }, [library, cachedIds]); // re-seed quand la bibliothèque ou les clips en cache changent
+
+  // ─── Réchauffe des 3 premières cartes dès qu'elles sont prêtes ─────────────
+  // Indépendant de l'IntersectionObserver et du unlock → la 1re carte est
+  // préchargée avant même le 1er tap (corrige « le 1er clip ne charge pas »).
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    enqueuePrefetch(items.slice(0, 3), uid);
+  }, [items, uid]);
 
   // ─── Calcul des embeddings en background ────────────────────────────────────
 
@@ -110,8 +153,8 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
         .then((embs) => {
           if (cancelled) return;
           setEmbeddings(embs);
-          // Re-rank avec les vrais embeddings
-          const newRanked = rankFeed(allNuggets, embs, profile, Date.now());
+          // Re-rank avec les vrais embeddings (en conservant l'ordre cache-first)
+          const newRanked = cacheFirst(rankFeed(allNuggets, embs, profile, Date.now()), cachedIds);
           setRankedPool(newRanked);
           // Garder les cartes déjà visibles, compléter si besoin
           setItems((prev) => {
@@ -207,11 +250,11 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
                 .catch((e) => console.warn("[FeedView] audio play failed:", e));
             }
 
-            // ── Préchargement des N+1 / N+2 ────────────────────────────────
-            const next1 = items[idx + 1];
-            const next2 = items[idx + 2];
-            if (next1) prefetchAudio(next1, uid);
-            if (next2) prefetchAudio(next2, uid);
+            // ── Préchargement : carte active + fenêtre glissante N+1/N+2 ───
+            // La carte active est préchargée SANS condition de unlock : ainsi,
+            // au 1er tap, getOrGenerateAudio renvoie depuis le cache (lecture
+            // immédiate au lieu d'une génération à froid).
+            enqueuePrefetch(items.slice(idx, idx + 3), uid);
           } else {
             // Carte sortie → émettre signal dwell ou skip
             const start = dwellTimers.current.get(nugget.id);
