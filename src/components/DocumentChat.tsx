@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { SummaryData } from "../types";
 import { Send, Loader2, MessageCircle, AlertTriangle } from "lucide-react";
 import { cn } from "../lib/utils";
+import { apiUrl } from "../lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -66,7 +67,7 @@ export function DocumentChat({ data, loadSourceText }: DocumentChatProps) {
       const body: Record<string, unknown> = { question: q, summary: summaryOnly };
       if (sourceText) body.sourceText = sourceText;
 
-      const res = await fetch("/api/chat", {
+      const res = await fetch(apiUrl("/api/chat"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

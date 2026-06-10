@@ -14,6 +14,7 @@
 import { ref, getDownloadURL, uploadBytes } from "firebase/storage";
 import { doc, getDoc, setDoc, arrayUnion } from "firebase/firestore";
 import { storage, db as fsdb } from "./firebase";
+import { apiUrl } from "./api";
 import { DialogueTurn, Nugget, NuggetScript } from "../types";
 
 // ─── IndexedDB cache (L1) ─────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ const objectURLs = new Map<string, string>();
 // ─── Génération via backend ───────────────────────────────────────────────────
 
 async function generateAudio(nugget: Nugget): Promise<{ blob: Blob; script: DialogueTurn[] }> {
-  const res = await fetch("/api/nugget-audio", {
+  const res = await fetch(apiUrl("/api/nugget-audio"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

@@ -16,6 +16,7 @@ import { auth, db, signInWithGoogle, logout, handleFirestoreError } from "./lib/
 import { audioController } from "./lib/audioController";
 import { buildNuggets } from "./lib/nuggets";
 import { enqueuePrefetch } from "./lib/nuggetAudio";
+import { apiUrl } from "./lib/api";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, query, onSnapshot, setDoc, doc, deleteDoc } from "firebase/firestore";
 
@@ -156,7 +157,7 @@ export default function App() {
     formData.append("file", file);
     formData.append("depth", depth);
 
-    const response = await fetch("/api/summarize", {
+    const response = await fetch(apiUrl("/api/summarize"), {
       method: "POST",
       body: formData,
     });
