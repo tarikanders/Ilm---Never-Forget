@@ -43,33 +43,29 @@ const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-// ─── PCM → WAV helper ────────────────────────────────────────────────────────
+// ─── PCM → MP3 helper ────────────────────────────────────────────────────────
 // Gemini TTS renvoie du PCM brut 16-bit signé, 24000 Hz, mono, encodé base64.
-// On l'encapsule dans un header WAV pour que les navigateurs puissent le jouer.
-function pcmToWav(base64Pcm: string, sampleRate = 24000): Buffer {
+// On encode en MP3 (~×10 plus léger qu'un WAV) pour accélérer le téléchargement,
+// surtout sur mobile. Import dynamique car @breezystack/lamejs est ESM-only.
+async function pcmToMp3(base64Pcm: string, sampleRate = 24000, kbps = 48): Promise<Buffer> {
+  // @ts-ignore — package ESM sans types garantis
+  const { Mp3Encoder } = await import("@breezystack/lamejs");
   const pcm = Buffer.from(base64Pcm, "base64");
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
-  const dataSize = pcm.length;
-  const header = Buffer.alloc(44);
+  // Copie alignée → vue Int16 sûre (le pool de Buffer peut donner un offset impair)
+  const ab = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.length);
+  const samples = new Int16Array(ab);
 
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataSize, 4); // ChunkSize
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);           // Subchunk1Size (PCM)
-  header.writeUInt16LE(1, 20);            // AudioFormat = PCM
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitsPerSample, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(dataSize, 40);
-
-  return Buffer.concat([header, pcm]);
+  const encoder = new Mp3Encoder(1, sampleRate, kbps);
+  const blockSize = 1152;
+  const chunks: Buffer[] = [];
+  for (let i = 0; i < samples.length; i += blockSize) {
+    const slice = samples.subarray(i, i + blockSize);
+    const buf = encoder.encodeBuffer(slice);
+    if (buf.length > 0) chunks.push(Buffer.from(buf));
+  }
+  const end = encoder.flush();
+  if (end.length > 0) chunks.push(Buffer.from(end));
+  return Buffer.concat(chunks);
 }
 
 // ─── Outil Claude pour le script dialogue ────────────────────────────────────
@@ -396,7 +392,7 @@ app.post("/api/nugget-audio", async (req, res) => {
     const nuggetLabel = typeLabel[type] ?? type;
 
     const scriptPrompt = `Tu es le producteur d'une émission radio française pédagogique et captivante.
-Génère un dialogue de 120 à 180 mots MAXIMUM entre deux voix :
+Génère un dialogue de 70 à 100 mots MAXIMUM entre deux voix :
 - "Hôte" : animateur curieux, ton vif, pose des questions qui accrochent.
 - "Experte" : spécialiste bienveillant, explique clairement avec des mots du quotidien.
 
@@ -458,13 +454,13 @@ Catégorie : ${category}`;
       throw new Error("Gemini TTS n'a pas retourné de données audio.");
     }
 
-    // ── 4. PCM → WAV ─────────────────────────────────────────────────────────
-    const wavBuffer = pcmToWav(audioPart.inlineData.data, 24000);
-    const audioBase64 = wavBuffer.toString("base64");
+    // ── 4. PCM → MP3 (léger pour le mobile) ──────────────────────────────────
+    const mp3Buffer = await pcmToMp3(audioPart.inlineData.data, 24000, 48);
+    const audioBase64 = mp3Buffer.toString("base64");
 
     res.json({
       audioBase64,
-      mimeType: "audio/wav",
+      mimeType: "audio/mpeg",
       script: { turns: script.turns },
     });
   } catch (err: any) {

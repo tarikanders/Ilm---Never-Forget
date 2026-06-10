@@ -6,3 +6,7 @@ dist
 .git
 *.log
 assets/.aistudio
+# Assets lourds/inutiles dans l'image API (servis par Hosting/CDN)
+public/background_bank
+public/bank
+scripts

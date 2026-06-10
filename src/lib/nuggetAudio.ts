@@ -90,17 +90,17 @@ async function generateAudio(nugget: Nugget): Promise<{ blob: Blob; script: Dial
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error ?? `Erreur génération audio (${res.status})`);
   }
-  const { audioBase64, script } = await res.json() as {
+  const { audioBase64, mimeType, script } = await res.json() as {
     audioBase64: string;
     mimeType: string;
     script: NuggetScript;
   };
 
-  // Décoder base64 → Blob WAV
+  // Décoder base64 → Blob audio (MP3 désormais ; mimeType piloté par le serveur)
   const binary = atob(audioBase64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const blob = new Blob([bytes], { type: "audio/wav" });
+  const blob = new Blob([bytes], { type: mimeType || "audio/mpeg" });
   return { blob, script: script.turns };
 }
 
@@ -125,7 +125,7 @@ async function storageGet(uid: string, nuggetId: string): Promise<string | null>
 async function storageUpload(uid: string, nuggetId: string, blob: Blob): Promise<void> {
   try {
     const path = storagePath(uid, nuggetId);
-    await uploadBytes(ref(storage, path), blob, { contentType: "audio/wav" });
+    await uploadBytes(ref(storage, path), blob, { contentType: blob.type || "audio/mpeg" });
   } catch (e) {
     console.warn("[nuggetAudio] Storage upload failed:", e);
   }
