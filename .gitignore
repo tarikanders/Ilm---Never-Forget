@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Assets de fond du feed — lourds, hors git (servis via Firebase Hosting).
+# 4K sources (transcodage) + sortie optimisée 1080p.
+background_bank/
+bank_png/
+public/background_bank/

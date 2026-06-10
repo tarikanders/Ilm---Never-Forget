@@ -72,3 +72,22 @@ export interface TasteProfile {
 }
 
 export type FeedSignal = "like" | "save" | "skip" | "dwell" | "open";
+
+// ─── Audio / Dialogue types ───────────────────────────────────────────────────
+
+export interface DialogueTurn {
+  speaker: string; // "Hôte" | "Experte"
+  text: string;
+}
+
+export interface NuggetScript {
+  turns: DialogueTurn[];
+}
+
+export type AudioState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "playing"; currentTime: number; duration: number }
+  | { status: "paused"; currentTime: number; duration: number }
+  | { status: "ended" }
+  | { status: "error"; message: string };

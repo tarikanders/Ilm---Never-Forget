@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { FileUpload } from "./components/FileUpload";
 import { SummaryView } from "./components/SummaryView";
 import { GraphView } from "./components/GraphView";
@@ -13,6 +13,7 @@ import { SummaryData } from "./types";
 import { BookMarked, Loader2, Library, ArrowLeft, Search, List, Network, LogIn, LogOut, Tags, UserCircle, Plus, Sparkles } from "lucide-react";
 import { cn } from "./lib/utils";
 import { auth, db, signInWithGoogle, logout, handleFirestoreError } from "./lib/firebase";
+import { audioController } from "./lib/audioController";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { collection, query, onSnapshot, setDoc, doc, deleteDoc } from "firebase/firestore";
 
@@ -33,6 +34,27 @@ export default function App() {
       return [];
     }
   });
+
+  // ─── Audio : pause/reprise quand on quitte/revient au feed ─────────────────
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (appState !== "feed") {
+      // Quitter le feed → mettre en pause (currentId conservé pour la reprise)
+      audioController.pause();
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    } else {
+      // Revenir au feed → reprendre l'audio en cours après que FeedView se monte
+      resumeTimerRef.current = setTimeout(() => {
+        const id = audioController.currentId;
+        if (id && audioController.unlocked) {
+          audioController.play(id, "").catch(() => {});
+        }
+      }, 250);
+    }
+    return () => {
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    };
+  }, [appState]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTag, setSelectedTag] = useState<string>("");
@@ -252,7 +274,7 @@ export default function App() {
           </div>
         </div>
 
-        <FeedView library={library} onOpenSource={loadFromLibrary} />
+        <FeedView library={library} onOpenSource={loadFromLibrary} uid={currentUser?.uid ?? null} />
       </div>
     );
   }

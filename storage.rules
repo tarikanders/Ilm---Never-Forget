@@ -1,0 +1,14 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Clips audio générés par nugget — lecture/écriture uniquement par le propriétaire
+    match /users/{uid}/audio/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Blocage de tout le reste par défaut
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

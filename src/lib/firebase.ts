@@ -2,6 +2,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, collection, getDocs, setDoc, deleteDoc, query, onSnapshot, orderBy } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import fileConfig from '../../firebase-applet-config.json';
 
 // Env vars (VITE_*) take priority over the bundled config file.
@@ -22,6 +23,7 @@ const firestoreDatabaseId: string =
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firestoreDatabaseId);
 export const auth = getAuth();
+export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = async () => {

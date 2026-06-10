@@ -4,8 +4,10 @@ import { buildNuggets } from "../lib/nuggets";
 import { rankFeed, nextPage, DWELL_THRESHOLD_MS } from "../lib/feed";
 import { embedNuggets } from "../lib/embeddings";
 import { loadProfile, saveProfile, updateProfile, markSeen } from "../lib/taste";
+import { getOrGenerateAudio, prefetchAudio } from "../lib/nuggetAudio";
+import { audioController } from "../lib/audioController";
 import { NuggetCard } from "./NuggetCard";
-import { Sparkles, BookOpen, Loader2 } from "lucide-react";
+import { Sparkles, BookOpen, Loader2, Volume2, VolumeX } from "lucide-react";
 import { cn } from "../lib/utils";
 
 interface FeedViewProps {
@@ -13,6 +15,8 @@ interface FeedViewProps {
   onOpenSource: (item: SummaryData) => void;
   /** appelé depuis App quand le profil change (pour sync Firestore etc.) */
   onProfileChange?: (profile: TasteProfile) => void;
+  /** uid Firebase de l'utilisateur connecté (null = local) */
+  uid?: string | null;
 }
 
 const PAGE_SIZE = 8;
@@ -23,7 +27,7 @@ const PAGE_SIZE = 8;
  * - IntersectionObserver pour dwell/skip + append auto
  * - Embeddings calculés en background ; ranking actif dès qu'ils sont prêts
  */
-export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewProps) {
+export function FeedView({ library, onOpenSource, onProfileChange, uid = null }: FeedViewProps) {
   const [items, setItems] = useState<Nugget[]>([]);
   const [offset, setOffset] = useState(0);
   const [rankedPool, setRankedPool] = useState<Nugget[]>([]);
@@ -31,6 +35,17 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
   const [profile, setProfileState] = useState<TasteProfile>(loadProfile);
   const [embProgress, setEmbProgress] = useState<{ done: number; total: number } | null>(null);
   const [isModelLoading, setIsModelLoading] = useState(false);
+
+  // ─── Audio state ─────────────────────────────────────────────────────────────
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem("ilm-audio-enabled") !== "false"; } catch { return true; }
+  });
+  // Initialiser depuis le singleton — persiste si l'utilisateur a déjà déverrouillé dans la session
+  const [audioUnlocked, setAudioUnlocked] = useState(() => audioController.unlocked);
+  // Index de la carte active dans items[]
+  const [activeIdx, setActiveIdx] = useState<number>(0);
+  // Scripts de dialogue reçus après génération — Map<nuggetId, turns[]>
+  const [audioScripts, setAudioScripts] = useState<Map<string, import("../types").DialogueTurn[]>>(new Map());
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -133,12 +148,12 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
     return () => obs.disconnect();
   }, [rankedPool, offset]);
 
-  // ─── Dwell tracking (IntersectionObserver par carte) ────────────────────────
+  // ─── Dwell tracking + audio (IntersectionObserver par carte) ────────────────
 
   useEffect(() => {
     const observers: IntersectionObserver[] = [];
 
-    items.forEach((nugget) => {
+    items.forEach((nugget, idx) => {
       const el = cardRefs.current.get(nugget.id);
       if (!el) return;
 
@@ -152,6 +167,33 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
             dwellTimers.current.set(nugget.id, Date.now());
             // Marquer comme vu
             setProfile((p) => markSeen(p, nugget.id));
+            setActiveIdx(idx);
+
+            // ── Audio : lecture de la carte active ──────────────────────────
+            // Ne pas auto-jouer si un audio est déjà en pause pour une autre carte
+            // (cas retour depuis bibliothèque — App.tsx s'occupe de la reprise)
+            const hasPausedElsewhere = !!audioController.currentId && audioController.currentId !== nugget.id;
+            if (audioEnabled && audioUnlocked && !hasPausedElsewhere) {
+              getOrGenerateAudio(nugget, uid)
+                .then(({ url, script }) => {
+                  // Stocker le script pour le transmettre à la NuggetCard
+                  if (script.length > 0) {
+                    setAudioScripts((prev) => {
+                      const next = new Map(prev);
+                      next.set(nugget.id, script);
+                      return next;
+                    });
+                  }
+                  audioController.play(nugget.id, url);
+                })
+                .catch((e) => console.warn("[FeedView] audio play failed:", e));
+            }
+
+            // ── Préchargement des N+1 / N+2 ────────────────────────────────
+            const next1 = items[idx + 1];
+            const next2 = items[idx + 2];
+            if (next1) prefetchAudio(next1, uid);
+            if (next2) prefetchAudio(next2, uid);
           } else {
             // Carte sortie → émettre signal dwell ou skip
             const start = dwellTimers.current.get(nugget.id);
@@ -161,6 +203,11 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
               const emb = embeddings.get(nugget.id) ?? [];
               setProfile((p) => updateProfile(p, emb, signal, nugget.id));
               dwellTimers.current.delete(nugget.id);
+            }
+
+            // Stopper l'audio si c'est la carte qui sort
+            if (audioController.currentId === nugget.id) {
+              audioController.stop();
             }
           }
         },
@@ -172,7 +219,7 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
     });
 
     return () => observers.forEach((o) => o.disconnect());
-  }, [items, embeddings]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, embeddings, audioEnabled, audioUnlocked, uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Handler signaux depuis les cartes ──────────────────────────────────────
 
@@ -216,9 +263,49 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
     );
   }
 
+  const toggleAudio = useCallback(() => {
+    const next = !audioEnabled;
+    setAudioEnabled(next);
+    try { localStorage.setItem("ilm-audio-enabled", String(next)); } catch {}
+    if (!next) audioController.stop();
+  }, [audioEnabled]);
+
+  const handleContainerClick = useCallback(() => {
+    if (!audioUnlocked) {
+      // Premier tap : déverrouiller l'autoplay puis démarrer la carte active
+      audioController.unlock();
+      setAudioUnlocked(true);
+      if (audioEnabled) {
+        const active = items[activeIdx];
+        if (active) {
+          getOrGenerateAudio(active, uid)
+            .then(({ url }) => audioController.play(active.id, url))
+            .catch(() => {});
+        }
+      }
+      return;
+    }
+
+    // Taps suivants : play/pause sur la carte active
+    if (!audioEnabled) return;
+    const active = items[activeIdx];
+    if (!active) return;
+
+    if (audioController.currentId === active.id) {
+      // Même nugget en cours → toggle (url ignorée par le controller)
+      audioController.play(active.id, "").catch(() => {});
+    } else {
+      // Pas d'audio actif → démarrer (depuis cache ou génération)
+      getOrGenerateAudio(active, uid)
+        .then(({ url }) => audioController.play(active.id, url))
+        .catch(() => {});
+    }
+  }, [audioUnlocked, audioEnabled, items, activeIdx, uid]);
+
   return (
     <div
       ref={containerRef}
+      onClick={handleContainerClick}
       className="h-[100dvh] w-full overflow-y-scroll snap-y snap-mandatory hide-scrollbar relative"
     >
       {/* Indicateur de chargement modèle (non-bloquant) */}
@@ -229,8 +316,19 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
         </div>
       )}
 
+      {/* Toggle mute audio */}
+      <button
+        onClick={(e) => { e.stopPropagation(); toggleAudio(); }}
+        className="fixed top-safe left-4 z-50 flex items-center justify-center w-9 h-9 rounded-full bg-ink-800/70 backdrop-blur-sm border border-white/10 text-white/60 hover:text-white transition-colors"
+        title={audioEnabled ? "Couper le son" : "Activer le son"}
+        aria-label={audioEnabled ? "Couper le son" : "Activer le son"}
+      >
+        {audioEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4 text-white/30" />}
+      </button>
+
+
       {/* Cartes */}
-      {items.map((nugget) => (
+      {items.map((nugget, idx) => (
         <NuggetCard
           key={nugget.id}
           ref={(el) => {
@@ -241,6 +339,10 @@ export function FeedView({ library, onOpenSource, onProfileChange }: FeedViewPro
           profile={profile}
           onSignal={handleSignal}
           onOpenSource={handleOpenSource}
+          isActive={idx === activeIdx}
+          uid={uid}
+          audioEnabled={audioEnabled}
+          audioScript={audioScripts.get(nugget.id) ?? []}
         />
       ))}
 

@@ -3,6 +3,7 @@ import path from "path";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { PDFParse } from "pdf-parse";
 import { extractTextFromEpub } from "./epub";
 import cors from "cors";
@@ -15,6 +16,9 @@ const PORT = parseInt(process.env.PORT || "3000");
 
 app.use(cors());
 app.use(express.json());
+
+// Serve background media assets (optimisés, dans public/ — servis aussi par Vite/dist)
+app.use("/background_bank", express.static(path.join(process.cwd(), "public", "background_bank")));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -29,6 +33,76 @@ const getAnthropicClient = () => {
     throw new Error("ANTHROPIC_API_KEY is not set.");
   }
   return new Anthropic({ apiKey });
+};
+
+const getGeminiClient = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not set.");
+  }
+  return new GoogleGenAI({ apiKey });
+};
+
+// ─── PCM → WAV helper ────────────────────────────────────────────────────────
+// Gemini TTS renvoie du PCM brut 16-bit signé, 24000 Hz, mono, encodé base64.
+// On l'encapsule dans un header WAV pour que les navigateurs puissent le jouer.
+function pcmToWav(base64Pcm: string, sampleRate = 24000): Buffer {
+  const pcm = Buffer.from(base64Pcm, "base64");
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const dataSize = pcm.length;
+  const header = Buffer.alloc(44);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4); // ChunkSize
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);           // Subchunk1Size (PCM)
+  header.writeUInt16LE(1, 20);            // AudioFormat = PCM
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcm]);
+}
+
+// ─── Outil Claude pour le script dialogue ────────────────────────────────────
+const dialogueTool: Anthropic.Tool = {
+  name: "provide_dialogue",
+  description:
+    "Fournit un script de dialogue radio (2 voix) pour présenter un concept issu d'un livre ou document.",
+  input_schema: {
+    type: "object",
+    properties: {
+      turns: {
+        type: "array",
+        description:
+          "Répliques alternées du dialogue. Doit commencer par une accroche/question forte qui donne envie d'écouter la suite.",
+        items: {
+          type: "object",
+          properties: {
+            speaker: {
+              type: "string",
+              enum: ["Hôte", "Experte"],
+              description: "Hôte = animateur curieux, Experte = spécialiste qui explique.",
+            },
+            text: {
+              type: "string",
+              description: "Texte à prononcer. Naturel, oral, sans balises.",
+            },
+          },
+          required: ["speaker", "text"],
+        },
+      },
+    },
+    required: ["turns"],
+  },
 };
 
 const summaryTool: Anthropic.Tool = {
@@ -289,6 +363,117 @@ app.post("/api/chat", async (req, res) => {
   } catch (err: any) {
     console.error("Chat error:", err);
     res.status(500).json({ error: err.message || "Erreur lors de la réponse." });
+  }
+});
+
+// ─── Nugget Audio endpoint ────────────────────────────────────────────────────
+app.post("/api/nugget-audio", async (req, res) => {
+  try {
+    const { id, type, title, body, detail, sourceTitle, author, category } = req.body as {
+      id: string;
+      type: string;
+      title: string;
+      body: string;
+      detail?: string;
+      sourceTitle: string;
+      author: string;
+      category: string;
+    };
+
+    if (!body?.trim()) {
+      return res.status(400).json({ error: "Nugget body manquant." });
+    }
+
+    const ai = getAnthropicClient();
+
+    // ── 1. Générer le script dialogue (Claude) ───────────────────────────────
+    const typeLabel: Record<string, string> = {
+      idea: "idée centrale",
+      concept: "concept clé",
+      quote: "citation mémorable",
+      lesson: "leçon pratique",
+    };
+    const nuggetLabel = typeLabel[type] ?? type;
+
+    const scriptPrompt = `Tu es le producteur d'une émission radio française pédagogique et captivante.
+Génère un dialogue de 120 à 180 mots MAXIMUM entre deux voix :
+- "Hôte" : animateur curieux, ton vif, pose des questions qui accrochent.
+- "Experte" : spécialiste bienveillant, explique clairement avec des mots du quotidien.
+
+RÈGLES STRICTES :
+1. Les 2 PREMIÈRES répliques DOIVENT poser une question ou une accroche percutante qui donne envie d'écouter la suite. Pas de "Bonjour", pas de présentation molle.
+2. Le dialogue approfondit UNIQUEMENT le contenu ci-dessous — pas d'inventions.
+3. Ton oral naturel (pas écrit). Phrases courtes. Rythme dynamique.
+4. Tout en FRANÇAIS.
+
+Nugget (${nuggetLabel}) — "${title}" — issu de "${sourceTitle}" (${author}) :
+Corps : ${body}
+${detail ? `Détails : ${detail}` : ""}
+Catégorie : ${category}`;
+
+    const scriptResponse = await ai.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      tools: [dialogueTool],
+      tool_choice: { type: "tool", name: "provide_dialogue" },
+      messages: [{ role: "user", content: scriptPrompt }],
+    });
+
+    const toolBlock = scriptResponse.content.find(
+      (b) => b.type === "tool_use"
+    ) as Anthropic.ToolUseBlock | undefined;
+    if (!toolBlock) {
+      throw new Error("Claude n'a pas retourné de dialogue structuré.");
+    }
+    const script = toolBlock.input as { turns: Array<{ speaker: string; text: string }> };
+
+    // ── 2. Composer le texte pour le TTS multi-locuteurs ────────────────────
+    // Format attendu par Gemini multiSpeakerVoiceConfig :
+    //   "NomLocuteur: réplique\n\nAutreLocuteur: réplique..."
+    const ttsText = script.turns
+      .map((t) => `${t.speaker}: ${t.text}`)
+      .join("\n\n");
+
+    // ── 3. Gemini TTS multi-locuteurs ───────────────────────────────────────
+    const gemini = getGeminiClient();
+
+    const ttsResponse = await gemini.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ role: "user", parts: [{ text: ttsText }] }],
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          multiSpeakerVoiceConfig: {
+            speakerVoiceConfigs: [
+              { speaker: "Hôte", voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } } },
+              { speaker: "Experte", voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
+            ],
+          },
+        },
+      },
+    });
+
+    const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.[0];
+    if (!audioPart?.inlineData?.data) {
+      throw new Error("Gemini TTS n'a pas retourné de données audio.");
+    }
+
+    // ── 4. PCM → WAV ─────────────────────────────────────────────────────────
+    const wavBuffer = pcmToWav(audioPart.inlineData.data, 24000);
+    const audioBase64 = wavBuffer.toString("base64");
+
+    res.json({
+      audioBase64,
+      mimeType: "audio/wav",
+      script: { turns: script.turns },
+    });
+  } catch (err: any) {
+    console.error("[nugget-audio] Error:", err);
+    const msg = err.message || "Erreur génération audio.";
+    if (msg.includes("overloaded") || msg.includes("529") || msg.includes("rate_limit")) {
+      return res.status(503).json({ error: "Serveurs IA surchargés, réessayez dans un instant." });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 

@@ -122,14 +122,27 @@ body {
 .orb-2 { animation: orb2 18s ease-in-out infinite; }
 .orb-3 { animation: orb3 22s ease-in-out infinite; }
 
-/* ── Bottom sheet slide-up ───────────────────────────────────────────────── */
+/* ── Bottom sheet slide-up / down ────────────────────────────────────────── */
 @keyframes sheet-up {
   from { transform: translateY(100%); }
   to   { transform: translateY(0); }
 }
 .sheet-slide-up {
-  animation: sheet-up 0.35s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  animation: sheet-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform;
 }
+@keyframes sheet-down {
+  from { transform: translateY(0); }
+  to   { transform: translateY(101%); }
+}
+.sheet-slide-down {
+  animation: sheet-down 0.28s cubic-bezier(0.4, 0, 1, 1) forwards;
+  will-change: transform;
+}
+@keyframes scrim-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scrim-out { from { opacity: 1; } to { opacity: 0; } }
+.scrim-in  { animation: scrim-in 0.3s ease forwards; }
+.scrim-out { animation: scrim-out 0.26s ease forwards; }
 
 /* ── Feed : force toujours dark, indépendamment du thème système ─────────── */
 .feed-dark {
