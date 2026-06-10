@@ -205,7 +205,7 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
               muted
               loop
               playsInline
-              preload="metadata"
+              preload="none"
               className="w-full h-full object-cover scale-[1.04]"
               style={{ filter: "blur(2px)", opacity: 0.72 }}
             />

@@ -92,33 +92,51 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
 
   useEffect(() => {
     if (library.length === 0) return;
-    const allNuggets = buildNuggets(library);
+    let cancelled = false;
 
-    setIsModelLoading(true);
-    setEmbProgress({ done: 0, total: allNuggets.length });
+    // Le modèle e5-small fait ~30 Mo : on diffère son téléchargement pour ne
+    // pas saturer la bande passante mobile au détriment des vidéos/audio.
+    // Le feed reste fonctionnel entre-temps (ranking heuristique sans embeddings).
+    const start = () => {
+      if (cancelled) return;
+      const allNuggets = buildNuggets(library);
 
-    embedNuggets(allNuggets, (done, total) => {
-      setEmbProgress({ done, total });
-    })
-      .then((embs) => {
-        setEmbeddings(embs);
-        // Re-rank avec les vrais embeddings
-        const newRanked = rankFeed(allNuggets, embs, profile, Date.now());
-        setRankedPool(newRanked);
-        // Garder les cartes déjà visibles, compléter si besoin
-        setItems((prev) => {
-          const seen = new Set(prev.map((n) => n.id));
-          const extras = newRanked
-            .filter((n) => !seen.has(n.id))
-            .slice(0, Math.max(0, PAGE_SIZE - prev.length));
-          return [...prev, ...extras];
-        });
+      setIsModelLoading(true);
+      setEmbProgress({ done: 0, total: allNuggets.length });
+
+      embedNuggets(allNuggets, (done, total) => {
+        if (!cancelled) setEmbProgress({ done, total });
       })
-      .catch((e) => console.warn("[FeedView] embeddings error", e))
-      .finally(() => {
-        setIsModelLoading(false);
-        setEmbProgress(null);
-      });
+        .then((embs) => {
+          if (cancelled) return;
+          setEmbeddings(embs);
+          // Re-rank avec les vrais embeddings
+          const newRanked = rankFeed(allNuggets, embs, profile, Date.now());
+          setRankedPool(newRanked);
+          // Garder les cartes déjà visibles, compléter si besoin
+          setItems((prev) => {
+            const seen = new Set(prev.map((n) => n.id));
+            const extras = newRanked
+              .filter((n) => !seen.has(n.id))
+              .slice(0, Math.max(0, PAGE_SIZE - prev.length));
+            return [...prev, ...extras];
+          });
+        })
+        .catch((e) => console.warn("[FeedView] embeddings error", e))
+        .finally(() => {
+          if (cancelled) return;
+          setIsModelLoading(false);
+          setEmbProgress(null);
+        });
+    };
+
+    const ric = (window as typeof window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+    const handle = ric ? ric(start, { timeout: 6000 }) : window.setTimeout(start, 4000);
+    return () => {
+      cancelled = true;
+      const cic = (window as typeof window & { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
+      if (ric && cic) cic(handle); else clearTimeout(handle as number);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [library]);
 
