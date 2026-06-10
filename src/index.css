@@ -156,6 +156,19 @@ body {
   --th-ink-600: #2C2C2C;
   --th-white: #ffffff;
   --th-black: #000000;
+  /* Surcharge DIRECTE des tokens Tailwind : les --th-* ne suffisent pas car
+     Tailwind v4 fige --color-* au build → sans ça, text-white=noir et
+     black/ink=blanc en mode clair système (icônes noires + fondu blanc). */
+  --color-sand-100: #F6F1E5;
+  --color-sand-300: #E5DBBE;
+  --color-sand-500: #C9A84C;
+  --color-sand-700: #B0923E;
+  --color-ink-900: #080808;
+  --color-ink-800: #111111;
+  --color-ink-700: #1A1A1A;
+  --color-ink-600: #2C2C2C;
+  --color-white: #ffffff;
+  --color-black: #000000;
   color-scheme: dark;
 }
 

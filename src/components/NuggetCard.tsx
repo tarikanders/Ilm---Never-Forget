@@ -114,17 +114,6 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
     const isLiked = profile.liked.includes(nugget.id);
     const isSaved = profile.saved.includes(nugget.id);
 
-    // Play/pause background video based on active state
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video || !isVideo) return;
-      if (isActive) {
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
-    }, [isActive, isVideo]);
-
     // ─── Audio state local ────────────────────────────────────────────────────
     const [audioState, setAudioState] = useState<AudioState>({ status: "idle" });
 
@@ -139,6 +128,18 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
         }
       });
     }, [nugget.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Vidéo de fond : joue si carte active ET audio pas en pause.
+    // → cliquer pause (ou l'écran) met aussi la vidéo en pause.
+    useEffect(() => {
+      const video = videoRef.current;
+      if (!video || !isVideo) return;
+      if (isActive && audioState.status !== "paused") {
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
+    }, [isActive, isVideo, audioState.status]);
 
     const handleAudioToggle = useCallback(
       (e: React.MouseEvent) => {
@@ -231,8 +232,6 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
 
         {/* Gradients overlay pour lisibilité — scrims ciblés, pas de voile global */}
         <div className="absolute inset-0 pointer-events-none" aria-hidden>
-          {/* Scrim haut léger : lisibilité de la nav flottante */}
-          <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-black/55 to-transparent" />
           {/* Teinte de couleur par type (subtile) */}
           <div className={cn("absolute inset-0 bg-gradient-to-b", config.gradientTop)} />
           {/* Scrim bas fort : protège le titre/corps/source */}
