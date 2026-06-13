@@ -166,6 +166,7 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
     const handleSave = (e: React.MouseEvent) => { e.stopPropagation(); onSignal(nugget.id, "save"); };
     const handleShare = (e: React.MouseEvent) => {
       e.stopPropagation();
+      onSignal(nugget.id, "share");
       navigator.share
         ? navigator.share({ title: nugget.title, text: nugget.body })
         : navigator.clipboard.writeText(nugget.body);
@@ -175,7 +176,7 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
       onSignal(nugget.id, "open");
       onOpenSource(nugget.sourceId);
     };
-    const openSheet = (e: React.MouseEvent) => { e.stopPropagation(); setSheetClosing(false); setSheetOpen(true); setActiveTab(0); };
+    const openSheet = (e: React.MouseEvent) => { e.stopPropagation(); onSignal(nugget.id, "expand"); setSheetClosing(false); setSheetOpen(true); setActiveTab(0); };
     const closeSheet = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (sheetClosing) return;
@@ -254,7 +255,7 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
           {/* Badge — cliquable → détail */}
           <button
             onClick={openSheet}
-            className="flex items-center gap-2 mb-3 w-full text-left group active:opacity-70 transition-opacity text-white"
+            className="flex items-center gap-2 mb-2 w-full text-left group active:opacity-70 transition-opacity text-white"
           >
             <span className={cn("flex items-center gap-1.5 text-[10px] font-bold tracking-widest uppercase", config.accentClass)}>
               <Icon className="w-3.5 h-3.5" />
@@ -275,7 +276,7 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
           {nugget.type === "concept" && (
             <h2
               onClick={openSheet}
-              className="text-2xl sm:text-3xl font-sans font-semibold text-[#F6F1E5] mb-3 leading-tight cursor-pointer active:opacity-70 transition-opacity"
+              className="text-lg sm:text-xl font-sans font-semibold text-[#F6F1E5] mb-1.5 leading-tight cursor-pointer active:opacity-70 transition-opacity"
             >
               {nugget.title}
             </h2>
@@ -283,17 +284,17 @@ export const NuggetCard = forwardRef<HTMLDivElement, NuggetCardProps>(
 
           {/* Corps */}
           {nugget.type === "quote" ? (
-            <blockquote className="border-l-2 border-sand-500/50 pl-4 mb-3">
-              <p className="text-lg sm:text-xl font-serif italic text-[#F6F1E5] leading-relaxed line-clamp-5">
+            <blockquote className="border-l-2 border-sand-500/50 pl-4 mb-2">
+              <p className="text-base sm:text-lg font-serif italic text-[#F6F1E5] leading-relaxed line-clamp-4">
                 « {nugget.body} »
               </p>
             </blockquote>
           ) : (
             <p className={cn(
-              "font-serif leading-relaxed mb-3 line-clamp-5",
+              "font-serif leading-relaxed mb-2 line-clamp-4",
               nugget.type === "idea"
-                ? "text-xl sm:text-2xl text-[#F6F1E5]"
-                : "text-base sm:text-lg text-white/85"
+                ? "text-base sm:text-lg text-[#F6F1E5]"
+                : "text-sm sm:text-base text-white/85"
             )}>
               {nugget.body}
             </p>

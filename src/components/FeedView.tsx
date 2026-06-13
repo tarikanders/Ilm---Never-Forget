@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Nugget, SummaryData, TasteProfile, FeedSignal } from "../types";
 import { buildNuggets } from "../lib/nuggets";
-import { rankFeed, nextPage, DWELL_THRESHOLD_MS } from "../lib/feed";
+import { rankFeed, nextPage } from "../lib/feed";
 import { embedNuggets } from "../lib/embeddings";
-import { loadProfile, saveProfile, updateProfile, markSeen } from "../lib/taste";
+import { loadProfile, saveProfile, applyImpression, recordAction, markSeen } from "../lib/taste";
+import { ImpressionTracker, SessionTaste, engagementScore } from "../lib/engagement";
 import { getOrGenerateAudio, enqueuePrefetch, getCachedAudioIds } from "../lib/nuggetAudio";
 import { audioController } from "../lib/audioController";
 import { NuggetCard } from "./NuggetCard";
-import { Sparkles, BookOpen, Loader2, Volume2, VolumeX } from "lucide-react";
+import { Sparkles, BookOpen, Loader2, Volume2, VolumeX, Heart } from "lucide-react";
 import { cn } from "../lib/utils";
 
 interface FeedViewProps {
@@ -21,26 +22,24 @@ interface FeedViewProps {
 
 const PAGE_SIZE = 8;
 
-/** Fisher-Yates — mélange une copie (ne mute pas l'entrée). */
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
+// Re-rank intra-session : déclenché après N impressions, ou immédiatement
+// si un signal fort (|engagement| ≥ seuil) vient d'être émis.
+const RERANK_EVERY_N_IMPRESSIONS = 3;
+const RERANK_STRONG_SIGNAL = 0.5;
 
 /**
- * Réordonne le pool « cache-first » : les nuggets dont l'audio est déjà généré
- * passent en tête (mélangés pour la variété), le reste garde le classement par goût.
- * → lecture instantanée à l'ouverture, sans attendre une génération à froid.
+ * Garantit que la 1re carte du feed a son audio déjà en cache (lecture
+ * instantanée à l'ouverture). Le reste du classement par goût est intact —
+ * le bonus cache est déjà intégré au score par le ranker.
  */
-function cacheFirst(ranked: Nugget[], cached: Set<string>): Nugget[] {
-  if (cached.size === 0) return ranked;
-  const hit = shuffle(ranked.filter((n) => cached.has(n.id)));
-  const miss = ranked.filter((n) => !cached.has(n.id));
-  return [...hit, ...miss];
+function ensureFirstPlayable(ranked: Nugget[], cached: Set<string>): Nugget[] {
+  if (cached.size === 0 || ranked.length === 0 || cached.has(ranked[0].id)) return ranked;
+  const idx = ranked.findIndex((n) => cached.has(n.id));
+  if (idx === -1) return ranked;
+  const out = [...ranked];
+  const [hit] = out.splice(idx, 1);
+  out.unshift(hit);
+  return out;
 }
 
 /**
@@ -70,13 +69,31 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
   const [activeIdx, setActiveIdx] = useState<number>(0);
   // Scripts de dialogue reçus après génération — Map<nuggetId, turns[]>
   const [audioScripts, setAudioScripts] = useState<Map<string, import("../types").DialogueTurn[]>>(new Map());
+  // Burst cœur du double-tap (incrémenté à chaque double-tap → relance l'anim)
+  const [likeBurst, setLikeBurst] = useState(0);
+  // Détection du double-tap (1er tap en attente)
+  const tapTimerRef = useRef<number | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // Chronomètres de dwell par carte (id → startTime)
-  const dwellTimers = useRef<Map<string, number>>(new Map());
+  // Trackers d'impression par carte visible (id → tracker)
+  const trackers = useRef<Map<string, ImpressionTracker>>(new Map());
+  // Goût court-terme de la session (volatile, reset au reload)
+  const sessionRef = useRef<SessionTaste | null>(null);
+  if (sessionRef.current === null) sessionRef.current = new SessionTaste();
+  // Impressions depuis le dernier re-rank (throttle)
+  const impressionsSinceRank = useRef(0);
+  // Miroirs pour le re-rank intra-session (éviter les closures périmées)
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const embeddingsRef = useRef(embeddings);
+  embeddingsRef.current = embeddings;
+  const cachedIdsRef = useRef(cachedIds);
+  cachedIdsRef.current = cachedIds;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
   // ─── Profil helpers ──────────────────────────────────────────────────────────
 
@@ -113,7 +130,14 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     }
 
     const allNuggets = buildNuggets(library);
-    const ranked = cacheFirst(rankFeed(allNuggets, embeddings, profile, Date.now()), cachedIds);
+    const ranked = ensureFirstPlayable(
+      rankFeed(allNuggets, embeddings, profile, {
+        session: sessionRef.current ?? undefined,
+        cachedIds,
+        seed: Date.now(),
+      }),
+      cachedIds
+    );
     setRankedPool(ranked);
 
     const first = nextPage(ranked, 0, PAGE_SIZE);
@@ -128,7 +152,11 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
 
   useEffect(() => {
     if (items.length === 0) return;
-    enqueuePrefetch(items.slice(0, 3), uid);
+    // Au montage (cache local vide la 1re session), on prend de l'avance : 4
+    // cartes préchargées d'emblée pour que les 3e/4e soient prêtes avant qu'on
+    // les atteigne. Avec Supertonic ce ne sont que des téléchargements Storage
+    // (audio déjà généré) → pas de coût TTS, juste du réseau anticipé.
+    enqueuePrefetch(items.slice(0, 4), uid);
   }, [items, uid]);
 
   // ─── Calcul des embeddings en background ────────────────────────────────────
@@ -153,8 +181,15 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
         .then((embs) => {
           if (cancelled) return;
           setEmbeddings(embs);
-          // Re-rank avec les vrais embeddings (en conservant l'ordre cache-first)
-          const newRanked = cacheFirst(rankFeed(allNuggets, embs, profile, Date.now()), cachedIds);
+          // Re-rank avec les vrais embeddings (1re carte jouable préservée)
+          const newRanked = ensureFirstPlayable(
+            rankFeed(allNuggets, embs, profile, {
+              session: sessionRef.current ?? undefined,
+              cachedIds,
+              seed: Date.now(),
+            }),
+            cachedIds
+          );
           setRankedPool(newRanked);
           // Garder les cartes déjà visibles, compléter si besoin
           setItems((prev) => {
@@ -209,7 +244,97 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     return () => obs.disconnect();
   }, [rankedPool, offset]);
 
-  // ─── Dwell tracking + audio (IntersectionObserver par carte) ────────────────
+  // ─── Tracking audio : alimente le tracker de la carte en cours d'écoute ────
+  // Le ratio d'écoute réel (et les réécoutes) est un signal d'intérêt bien plus
+  // fiable que le simple temps à l'écran.
+
+  useEffect(() => {
+    return audioController.subscribe((currentId, state) => {
+      if (!currentId) return;
+      if (state.status === "playing" || state.status === "paused") {
+        trackers.current.get(currentId)?.noteAudioProgress(state.currentTime, state.duration);
+      } else if (state.status === "ended") {
+        trackers.current.get(currentId)?.noteAudioEnded();
+        // Auto-advance : la narration finie → scroll vers la carte suivante.
+        // L'IntersectionObserver l'activera et lancera son audio automatiquement.
+        const idx = itemsRef.current.findIndex((n) => n.id === currentId);
+        const next = idx >= 0 ? itemsRef.current[idx + 1] : undefined;
+        if (next) cardRefs.current.get(next.id)?.scrollIntoView({ behavior: "smooth" });
+      }
+    });
+  }, []);
+
+  // ─── Flush des impressions en cours quand on quitte le feed ────────────────
+  // À l'unmount, setState ne s'exécute plus → on applique et persiste direct.
+
+  useEffect(() => {
+    return () => {
+      let p = profileRef.current;
+      for (const [id, tracker] of trackers.current) {
+        const nugget = itemsRef.current.find((n) => n.id === id);
+        if (!nugget) continue;
+        p = applyImpression(p, nugget, embeddingsRef.current.get(id) ?? [], tracker.finish());
+      }
+      trackers.current.clear();
+      if (p !== profileRef.current) {
+        saveProfile(p);
+        onProfileChange?.(p);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Re-rank intra-session ──────────────────────────────────────────────────
+  // Comme TikTok : le feed s'adapte PENDANT le scroll. Les cartes déjà affichées
+  // restent en place ; tout ce qui n'est pas encore monté à l'écran est reclassé
+  // avec le profil et le goût de session à jour.
+
+  const rerankUpcoming = useCallback(() => {
+    const allNuggets = buildNuggets(library);
+    const displayed = new Set(itemsRef.current.map((n) => n.id));
+    let upcoming = rankFeed(allNuggets, embeddingsRef.current, profileRef.current, {
+      session: sessionRef.current ?? undefined,
+      cachedIds: cachedIdsRef.current,
+      excludeIds: displayed,
+      seed: Date.now(),
+    });
+    // Tout a déjà été affiché → reboucler sur le pool complet (re-classé)
+    if (upcoming.length === 0) {
+      upcoming = rankFeed(allNuggets, embeddingsRef.current, profileRef.current, {
+        session: sessionRef.current ?? undefined,
+        cachedIds: cachedIdsRef.current,
+        seed: Date.now(),
+      });
+    }
+    setRankedPool(upcoming);
+    setOffset(0);
+    impressionsSinceRank.current = 0;
+  }, [library]);
+
+  // ─── Fin d'impression : apprendre du passage de la carte ───────────────────
+
+  const finishImpression = useCallback((nugget: Nugget) => {
+    const tracker = trackers.current.get(nugget.id);
+    if (!tracker) return;
+    trackers.current.delete(nugget.id);
+
+    const impression = tracker.finish();
+    const score = engagementScore(impression);
+    const emb = embeddingsRef.current.get(nugget.id) ?? [];
+
+    setProfile((p) => applyImpression(p, nugget, emb, impression));
+    sessionRef.current?.record(nugget, emb, score);
+
+    impressionsSinceRank.current++;
+    if (
+      Math.abs(score) >= RERANK_STRONG_SIGNAL ||
+      impressionsSinceRank.current >= RERANK_EVERY_N_IMPRESSIONS
+    ) {
+      rerankUpcoming();
+    }
+  }, [setProfile, rerankUpcoming]);
+
+  // ─── Impressions + audio (IntersectionObserver par carte) ──────────────────
 
   useEffect(() => {
     const observers: IntersectionObserver[] = [];
@@ -224,8 +349,10 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
           if (!entry) return;
 
           if (entry.isIntersecting) {
-            // Carte entrée → démarrer chrono
-            dwellTimers.current.set(nugget.id, Date.now());
+            // Carte entrée → démarrer le tracker d'impression
+            if (!trackers.current.has(nugget.id)) {
+              trackers.current.set(nugget.id, new ImpressionTracker(nugget));
+            }
             // Marquer comme vu
             setProfile((p) => markSeen(p, nugget.id));
             setActiveIdx(idx);
@@ -250,21 +377,17 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
                 .catch((e) => console.warn("[FeedView] audio play failed:", e));
             }
 
-            // ── Préchargement : carte active + fenêtre glissante N+1/N+2 ───
+            // ── Préchargement : carte active + fenêtre glissante N+3 ───────
             // La carte active est préchargée SANS condition de unlock : ainsi,
             // au 1er tap, getOrGenerateAudio renvoie depuis le cache (lecture
-            // immédiate au lieu d'une génération à froid).
-            enqueuePrefetch(items.slice(idx, idx + 3), uid);
+            // immédiate au lieu d'une génération à froid). Fenêtre = 4 (active +
+            // 3 suivantes) : avec Supertonic l'audio est pré-généré → le prefetch
+            // n'est qu'un téléchargement Storage, donc on prend large pour que la
+            // carte N+2/N+3 soit prête avant qu'on l'atteigne (réseau mobile lent).
+            enqueuePrefetch(items.slice(idx, idx + 4), uid);
           } else {
-            // Carte sortie → émettre signal dwell ou skip
-            const start = dwellTimers.current.get(nugget.id);
-            if (start !== undefined) {
-              const dwell = Date.now() - start;
-              const signal: FeedSignal = dwell >= DWELL_THRESHOLD_MS ? "dwell" : "skip";
-              const emb = embeddings.get(nugget.id) ?? [];
-              setProfile((p) => updateProfile(p, emb, signal, nugget.id));
-              dwellTimers.current.delete(nugget.id);
-            }
+            // Carte sortie → condenser l'impression et apprendre
+            finishImpression(nugget);
 
             // Stopper l'audio si c'est la carte qui sort
             if (audioController.currentId === nugget.id) {
@@ -286,10 +409,18 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
 
   const handleSignal = useCallback(
     (nuggetId: string, signal: FeedSignal) => {
-      const emb = embeddings.get(nuggetId) ?? [];
-      setProfile((p) => updateProfile(p, emb, signal, nuggetId));
+      // Toute action explicite nourrit l'impression en cours (l'apprentissage
+      // vectoriel se fait à la sortie de carte, avec le contexte complet)
+      const tracker = trackers.current.get(nuggetId);
+      if (signal === "like" || signal === "save" || signal === "share" || signal === "expand" || signal === "open") {
+        tracker?.noteAction(signal);
+      }
+      // Like/save mettent aussi à jour les listes immédiatement (état des icônes)
+      if (signal === "like" || signal === "save") {
+        setProfile((p) => recordAction(p, nuggetId, signal));
+      }
     },
-    [embeddings]
+    [setProfile]
   );
 
   const handleOpenSource = useCallback(
@@ -331,7 +462,9 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     if (!next) audioController.stop();
   }, [audioEnabled]);
 
-  const handleContainerClick = useCallback(() => {
+  // Tap simple (différé de ~260ms pour laisser une chance au 2e tap) : unlock /
+  // play / pause sur la carte active.
+  const handleSingleTap = useCallback(() => {
     if (!audioUnlocked) {
       // Premier tap : déverrouiller l'autoplay puis démarrer la carte active
       audioController.unlock();
@@ -363,6 +496,25 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     }
   }, [audioUnlocked, audioEnabled, items, activeIdx, uid]);
 
+  // Click container : 1 tap = play/pause (différé), 2 taps rapides = like (TikTok).
+  const handleContainerClick = useCallback(() => {
+    if (tapTimerRef.current !== null) {
+      // 2e tap dans la fenêtre → double-tap = like
+      window.clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = null;
+      const active = items[activeIdx];
+      if (active) {
+        handleSignal(active.id, "like");
+        setLikeBurst((n) => n + 1);
+      }
+      return;
+    }
+    tapTimerRef.current = window.setTimeout(() => {
+      tapTimerRef.current = null;
+      handleSingleTap();
+    }, 260);
+  }, [items, activeIdx, handleSignal, handleSingleTap]);
+
   return (
     <div
       ref={containerRef}
@@ -387,6 +539,13 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
         {audioEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4 text-white/30" />}
       </button>
 
+
+      {/* Cœur de double-tap (like) — clé = compteur → relance l'animation */}
+      {likeBurst > 0 && (
+        <div key={likeBurst} className="fixed inset-0 z-30 flex items-center justify-center pointer-events-none">
+          <Heart className="w-28 h-28 text-red-500 fill-red-500 like-burst drop-shadow-2xl" />
+        </div>
+      )}
 
       {/* Cartes */}
       {items.map((nugget, idx) => (
