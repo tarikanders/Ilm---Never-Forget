@@ -13,3 +13,13 @@ coverage/
 background_bank/
 bank_png/
 public/background_bank/
+_background_bank_4k_backup/
+
+# Worker local de génération audio
+worker/serviceAccount.json    # clé de compte de service Firebase — JAMAIS committer
+worker/*.json                 # autres clés éventuelles (sauf .env.example déjà géré)
+!worker/package*.json
+__pycache__/
+*.pyc
+.venv/
+venv/

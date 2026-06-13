@@ -73,6 +73,9 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
   const [likeBurst, setLikeBurst] = useState(0);
   // Détection du double-tap (1er tap en attente)
   const tapTimerRef = useRef<number | null>(null);
+  // Le 1er geste (pointerdown) déverrouille l'audio ; on avale le "click" qui
+  // l'accompagne pour qu'il ne rebascule pas play/pause juste après.
+  const unlockGestureRef = useRef(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -496,8 +499,27 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
     }
   }, [audioUnlocked, audioEnabled, items, activeIdx, uid]);
 
+  // 1er contact (pointerdown) : déverrouille l'autoplay AU PLUS TÔT et lance la
+  // carte active immédiatement — sans attendre le debounce de 260 ms.
+  const handleFirstGesture = useCallback(() => {
+    if (audioUnlocked) return;
+    audioController.unlock();
+    setAudioUnlocked(true);
+    unlockGestureRef.current = true;
+    window.setTimeout(() => { unlockGestureRef.current = false; }, 400);
+    if (!audioEnabled) return;
+    const active = items[activeIdx];
+    if (active) {
+      getOrGenerateAudio(active, uid)
+        .then(({ url }) => audioController.play(active.id, url))
+        .catch(() => {});
+    }
+  }, [audioUnlocked, audioEnabled, items, activeIdx, uid]);
+
   // Click container : 1 tap = play/pause (différé), 2 taps rapides = like (TikTok).
   const handleContainerClick = useCallback(() => {
+    // Click accompagnant le geste de déverrouillage → déjà traité par pointerdown
+    if (unlockGestureRef.current) { unlockGestureRef.current = false; return; }
     if (tapTimerRef.current !== null) {
       // 2e tap dans la fenêtre → double-tap = like
       window.clearTimeout(tapTimerRef.current);
@@ -518,6 +540,7 @@ export function FeedView({ library, onOpenSource, onProfileChange, uid = null }:
   return (
     <div
       ref={containerRef}
+      onPointerDown={handleFirstGesture}
       onClick={handleContainerClick}
       className="h-[100dvh] w-full overflow-y-scroll snap-y snap-mandatory hide-scrollbar relative"
     >
